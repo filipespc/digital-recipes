@@ -20,8 +20,7 @@ We will adopt a decoupled architecture consisting of two primary services: a **B
 
 ### Architecture Diagram
 
-```mermaid
-graph TD
+```graph TD
     subgraph User's Device
         Client[Client App - Web/Mobile]
     end
@@ -42,11 +41,21 @@ graph TD
 
     Client -- HTTPS --> LB
     LB -- Forwards Traffic --> API
+
+    API -- Upload Request --> Store(Generates Signed URL)
+    Client -- Uploads Image via Signed URL --> Store
+
     API -- Enqueues Job --> Queue
     Queue -- Delivers Job --> Parser
+
+    Parser -- Reads Image --> Store
+    Parser -- Sends Image Data --> OCR
+    OCR -- Returns Raw Text --> Parser
+    Parser -- Sends Text for Structuring --> LLM
+    LLM -- Returns Structured JSON --> Parser
+
     Parser -- Writes Results --> DB
     API -- Reads/Writes Data --> DB
-    Parser -- Reads Image & Calls APIs --> Store & External Services
 ```
 
 ## 2.Technology Stack & Components
@@ -86,28 +95,38 @@ The data model will be relational to enforce structure and integrity from day on
 ### Database Schema
 
 ```erDiagram
-    USERS ||--o{ RECIPES : "has"
-    RECIPES ||--|{ RECIPE_INGREDIENTS : "contains"
-    CANONICAL_INGREDIENTS ||--o{ RECIPE_INGREDIENTS : "is used in"
-
     USERS {
         int id PK
         string email
+        string name
     }
+
     RECIPES {
         int id PK
         string title
-        string status
+        string servings
+        text instructions
+        text tips
+        string status "e.g., 'processing', 'review_required', 'published'"
         int user_id FK
     }
+
     CANONICAL_INGREDIENTS {
         int id PK
-        string name
+        string name "e.g., 'Egg', 'All-Purpose Flour'"
+        boolean is_approved "For AI suggestions"
     }
+
     RECIPE_INGREDIENTS {
         int id PK
         int recipe_id FK
-        int canonical_ingredient_id FK
-        string original_text
+        int canonical_ingredient_id FK "Can be NULL if unlinked"
+        string original_text "e.g., '2 large eggs, beaten'"
+        float quantity
+        string unit
     }
+
+    USERS ||--o{ RECIPES : "has"
+    RECIPES ||--|{ RECIPE_INGREDIENTS : "contains"
+    CANONICAL_INGREDIENTS ||--o{ RECIPE_INGREDIENTS : "is used in"
 ```
