@@ -20,7 +20,8 @@ We will adopt a decoupled architecture consisting of two primary services: a **B
 
 ### Architecture Diagram
 
-```graph TD
+```mermaid
+graph TD
     subgraph User's Device
         Client[Client App - Web/Mobile]
     end
@@ -94,7 +95,8 @@ The data model will be relational to enforce structure and integrity from day on
 
 ### Database Schema
 
-```erDiagram
+```mermaid
+erDiagram
     USERS {
         int id PK
         string email
