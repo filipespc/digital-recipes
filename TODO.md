@@ -3,7 +3,7 @@
 ## High Priority Foundation
 
 - [x] **Setup project structure** with Go API service and Python parser service directories
-- [ ] **Create PostgreSQL schema migrations** for users, recipes, canonical_ingredients, recipe_ingredients tables
+- [x] **Create PostgreSQL schema migrations** for users, recipes, canonical_ingredients, recipe_ingredients tables
 - [ ] **Write database integration tests** for schema validation and basic CRUD operations
 
 ## Medium Priority Core APIs

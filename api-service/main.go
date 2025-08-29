@@ -4,7 +4,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 
+	"digital-recipes/api-service/db"
 	"github.com/gin-gonic/gin"
 )
 
@@ -14,12 +16,33 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	// Initialize database connection
+	database, err := db.NewConnection()
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer database.Close()
+
+	// Run migrations
+	migrationsDir := filepath.Join("db", "migrations")
+	if err := database.RunMigrations(migrationsDir); err != nil {
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
 	r := gin.Default()
 	
 	r.GET("/health", func(c *gin.Context) {
+		// Check database health
+		dbStatus := "healthy"
+		if err := database.HealthCheck(); err != nil {
+			dbStatus = "unhealthy"
+			log.Printf("Database health check failed: %v", err)
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"status": "healthy",
-			"service": "digital-recipes-api",
+			"status":   "healthy",
+			"service":  "digital-recipes-api",
+			"database": dbStatus,
 		})
 	})
 
