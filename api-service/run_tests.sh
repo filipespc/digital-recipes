@@ -14,8 +14,12 @@ TEST_DB_PORT="${TEST_DB_PORT:-5433}"
 
 # Generate secure random password if not provided
 if [ -z "${TEST_DB_PASS}" ]; then
-    TEST_DB_PASS=$(openssl rand -base64 12 2>/dev/null || echo "fallback_test_pass_$(date +%s)")
+    # Generate password without special characters that need URL encoding
+    TEST_DB_PASS=$(openssl rand -hex 12 2>/dev/null || echo "fallback_test_pass_$(date +%s)")
 fi
+
+# URL encode the password for safe inclusion in connection string
+TEST_DB_PASS_ENCODED=$(printf %s "$TEST_DB_PASS" | python3 -c "import urllib.parse; print(urllib.parse.quote(input()))")
 
 # Export all variables for use in docker and tests
 export TEST_DB_USER
@@ -23,7 +27,7 @@ export TEST_DB_NAME
 export TEST_DB_PORT
 export TEST_DB_PASS
 
-export TEST_DATABASE_URL="postgres://${TEST_DB_USER}:${TEST_DB_PASS}@localhost:${TEST_DB_PORT}/${TEST_DB_NAME}?sslmode=disable"
+export TEST_DATABASE_URL="postgres://${TEST_DB_USER}:${TEST_DB_PASS_ENCODED}@localhost:${TEST_DB_PORT}/${TEST_DB_NAME}?sslmode=disable"
 export DATABASE_URL="${TEST_DATABASE_URL}"
 
 echo "Using test database: ${TEST_DB_NAME} on port ${TEST_DB_PORT}"

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"digital-recipes/api-service/db"
+	"digital-recipes/api-service/handlers"
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,6 +32,9 @@ func main() {
 
 	r := gin.Default()
 	
+	// Initialize handlers
+	recipeHandler := handlers.NewRecipeHandler(database)
+	
 	r.GET("/health", func(c *gin.Context) {
 		// Check database health
 		dbStatus := "healthy"
@@ -45,6 +49,13 @@ func main() {
 			"database": dbStatus,
 		})
 	})
+
+	// API v1 routes
+	v1 := r.Group("/api/v1")
+	{
+		v1.GET("/recipes", recipeHandler.GetRecipes)
+		v1.GET("/recipes/:id", recipeHandler.GetRecipe)
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
