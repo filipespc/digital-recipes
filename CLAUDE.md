@@ -63,3 +63,9 @@ The following features are explicitly parked for future versions:
 
 ## Development Guidance
 When implementing features, always reference both the PRD for user requirements and the ADR for technical implementation approach. The core workflow of ingredient extraction, linking, and review is central to the user experience and technical architecture.
+
+## Development Process
+- Test-Driven Development (TDD) Approach:
+  - We want to test often to see if we are on track
+  - Active participation in test definition is crucial
+  - Always start by defining and implementing tests before writing implementation code

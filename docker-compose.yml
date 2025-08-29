@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-digital_recipes}
+      POSTGRES_USER: ${POSTGRES_USER:-dbuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api-service:
+    build: ./api-service
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-dbuser}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-digital_recipes}?sslmode=disable
+      - GIN_MODE=${GIN_MODE:-release}
+
+  parser-service:
+    build: ./parser-service
+    ports:
+      - "8081:8081"
+    environment:
+      - API_SERVICE_URL=http://api-service:8080
+
+volumes:
+  postgres_data:

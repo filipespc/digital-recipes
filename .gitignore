@@ -37,3 +37,20 @@ logs/
 # Database
 *.db
 *.sqlite
+
+# Go
+/api-service/bin/
+/api-service/*.exe
+/api-service/*.exe~
+/api-service/*.dll
+/api-service/*.so
+/api-service/*.dylib
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+/parser-service/.pytest_cache/
+/parser-service/venv/
+/parser-service/.venv/
