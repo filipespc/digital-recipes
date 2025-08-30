@@ -58,6 +58,7 @@ The following features are explicitly parked for future versions:
 ## File Structure Context
 - `PRD.md`: Complete product specification and user requirements
 - `ADR.md`: Technical architecture and implementation decisions  
+- `TODO.md`: Implementation roadmap with phase-by-phase development plan and current progress tracking
 - `README.md`: Basic project overview and getting started guide
 - `CLAUDE.md`: This file - project context and documentation guide
 
@@ -69,3 +70,24 @@ When implementing features, always reference both the PRD for user requirements 
   - We want to test often to see if we are on track
   - Active participation in test definition is crucial
   - Always start by defining and implementing tests before writing implementation code
+
+### Frontend Server Startup Protocol
+**IMPORTANT**: To avoid timeout issues when starting the Next.js development server, always use background execution:
+
+```bash
+# Correct way to start the frontend server (avoids timeout)
+cd frontend && npm run dev > dev.log 2>&1 &
+
+# Wait for server to start, then test
+sleep 3 && curl http://localhost:3000
+
+# Check server logs if needed
+tail -f dev.log
+
+# Kill background server when done
+pkill -f "npm run dev"
+```
+
+**Server URLs:**
+- Local: http://localhost:3000
+- Network: http://192.168.15.107:3000 (if localhost doesn't work)

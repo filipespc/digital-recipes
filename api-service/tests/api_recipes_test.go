@@ -124,11 +124,18 @@ func (suite *RecipeAPITestSuite) TestGetRecipesEmpty() {
 
 	assert.Equal(suite.T(), http.StatusOK, w.Code)
 	
-	var response []models.Recipe
+	var response handlers.StandardResponse
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(suite.T(), err, "Failed to unmarshal response")
 	
-	assert.Empty(suite.T(), response, "Should return empty array when no recipes exist")
+	// Convert data to recipes array
+	dataBytes, _ := json.Marshal(response.Data)
+	var recipes []models.Recipe
+	err = json.Unmarshal(dataBytes, &recipes)
+	require.NoError(suite.T(), err, "Failed to unmarshal recipes data")
+	
+	assert.Empty(suite.T(), recipes, "Should return empty array when no recipes exist")
+	assert.Equal(suite.T(), 0, response.Pagination.Total, "Total should be 0")
 }
 
 // TestGetRecipesSingle tests GET /recipes endpoint with one recipe
@@ -142,13 +149,20 @@ func (suite *RecipeAPITestSuite) TestGetRecipesSingle() {
 
 	assert.Equal(suite.T(), http.StatusOK, w.Code)
 	
-	var response []models.Recipe
+	var response handlers.StandardResponse
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(suite.T(), err, "Failed to unmarshal response")
 	
-	require.Len(suite.T(), response, 1, "Should return exactly one recipe")
+	// Convert data to recipes array
+	dataBytes, _ := json.Marshal(response.Data)
+	var recipes []models.Recipe
+	err = json.Unmarshal(dataBytes, &recipes)
+	require.NoError(suite.T(), err, "Failed to unmarshal recipes data")
 	
-	recipe := response[0]
+	require.Len(suite.T(), recipes, 1, "Should return exactly one recipe")
+	assert.Equal(suite.T(), 1, response.Pagination.Total, "Total should be 1")
+	
+	recipe := recipes[0]
 	assert.Equal(suite.T(), recipeID, recipe.ID)
 	assert.Equal(suite.T(), "Test Recipe", recipe.Title)
 	assert.Equal(suite.T(), "4", *recipe.Servings)
@@ -173,15 +187,22 @@ func (suite *RecipeAPITestSuite) TestGetRecipesMultiple() {
 
 	assert.Equal(suite.T(), http.StatusOK, w.Code)
 	
-	var response []models.Recipe
+	var response handlers.StandardResponse
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(suite.T(), err, "Failed to unmarshal response")
 	
-	require.Len(suite.T(), response, 3, "Should return all three recipes")
+	// Convert data to recipes array
+	dataBytes, _ := json.Marshal(response.Data)
+	var recipes []models.Recipe
+	err = json.Unmarshal(dataBytes, &recipes)
+	require.NoError(suite.T(), err, "Failed to unmarshal recipes data")
+	
+	require.Len(suite.T(), recipes, 3, "Should return all three recipes")
+	assert.Equal(suite.T(), 3, response.Pagination.Total, "Total should be 3")
 	
 	// Recipes should be ordered by created_at DESC (newest first)
 	expectedIDs := []int{recipe3ID, recipe2ID, recipe1ID}
-	for i, recipe := range response {
+	for i, recipe := range recipes {
 		assert.Equal(suite.T(), expectedIDs[i], recipe.ID, "Recipes should be ordered by creation time (newest first)")
 	}
 }
@@ -200,13 +221,20 @@ func (suite *RecipeAPITestSuite) TestGetRecipesFiltering() {
 
 	assert.Equal(suite.T(), http.StatusOK, w.Code)
 	
-	var response []models.Recipe
+	var response handlers.StandardResponse
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(suite.T(), err, "Failed to unmarshal response")
 	
-	require.Len(suite.T(), response, 1, "Should return only published recipes")
-	assert.Equal(suite.T(), "published", response[0].Status)
-	assert.Equal(suite.T(), "Published Recipe", response[0].Title)
+	// Convert data to recipes array
+	dataBytes, _ := json.Marshal(response.Data)
+	var recipes []models.Recipe
+	err = json.Unmarshal(dataBytes, &recipes)
+	require.NoError(suite.T(), err, "Failed to unmarshal recipes data")
+	
+	require.Len(suite.T(), recipes, 1, "Should return only published recipes")
+	assert.Equal(suite.T(), 1, response.Pagination.Total, "Total should be 1")
+	assert.Equal(suite.T(), "published", recipes[0].Status)
+	assert.Equal(suite.T(), "Published Recipe", recipes[0].Title)
 }
 
 // TestGetRecipesInvalidStatus tests GET /recipes endpoint with invalid status filter
@@ -235,14 +263,21 @@ func (suite *RecipeAPITestSuite) TestGetRecipeByID() {
 
 	assert.Equal(suite.T(), http.StatusOK, w.Code)
 	
-	var response models.Recipe
+	var response handlers.StandardResponse
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(suite.T(), err, "Failed to unmarshal response")
 	
-	assert.Equal(suite.T(), recipeID, response.ID)
-	assert.Equal(suite.T(), "Detailed Recipe", response.Title)
-	assert.Equal(suite.T(), "published", response.Status)
-	assert.Equal(suite.T(), suite.testUserID, response.UserID)
+	// Convert data to RecipeWithIngredients
+	dataBytes, _ := json.Marshal(response.Data)
+	var recipe models.RecipeWithIngredients
+	err = json.Unmarshal(dataBytes, &recipe)
+	require.NoError(suite.T(), err, "Failed to unmarshal recipe data")
+	
+	assert.Equal(suite.T(), recipeID, recipe.ID)
+	assert.Equal(suite.T(), "Detailed Recipe", recipe.Title)
+	assert.Equal(suite.T(), "published", recipe.Status)
+	assert.Equal(suite.T(), suite.testUserID, recipe.UserID)
+	assert.NotNil(suite.T(), recipe.Ingredients, "Ingredients should be included")
 }
 
 // TestGetRecipeByIDNotFound tests GET /recipes/:id endpoint with non-existent ID
@@ -283,22 +318,36 @@ func (suite *RecipeAPITestSuite) TestGetRecipesPagination() {
 		time.Sleep(1 * time.Millisecond) // Ensure different timestamps
 	}
 
-	// Test first page with limit 2
+	// Test first page with per_page 2
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/recipes?limit=2&offset=0", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/recipes?page=1&per_page=2", nil)
 	suite.router.ServeHTTP(w, req)
 
 	assert.Equal(suite.T(), http.StatusOK, w.Code)
 	
-	var response []models.Recipe
+	var response handlers.StandardResponse
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(suite.T(), err, "Failed to unmarshal response")
 	
-	assert.Len(suite.T(), response, 2, "Should return exactly 2 recipes on first page")
+	// Check response structure
+	assert.NotNil(suite.T(), response.Data, "Response should have data")
+	assert.NotNil(suite.T(), response.Pagination, "Response should have pagination")
+	
+	// Convert data to recipes array
+	dataBytes, _ := json.Marshal(response.Data)
+	var recipes []models.Recipe
+	err = json.Unmarshal(dataBytes, &recipes)
+	require.NoError(suite.T(), err, "Failed to unmarshal recipes data")
+	
+	assert.Len(suite.T(), recipes, 2, "Should return exactly 2 recipes on first page")
+	assert.Equal(suite.T(), 1, response.Pagination.Page)
+	assert.Equal(suite.T(), 2, response.Pagination.PerPage)
+	assert.Equal(suite.T(), 5, response.Pagination.Total)
+	assert.Equal(suite.T(), 3, response.Pagination.TotalPages)
 	
 	// Test second page
 	w = httptest.NewRecorder()
-	req, _ = http.NewRequest("GET", "/api/v1/recipes?limit=2&offset=2", nil)
+	req, _ = http.NewRequest("GET", "/api/v1/recipes?page=2&per_page=2", nil)
 	suite.router.ServeHTTP(w, req)
 
 	assert.Equal(suite.T(), http.StatusOK, w.Code)
@@ -306,28 +355,40 @@ func (suite *RecipeAPITestSuite) TestGetRecipesPagination() {
 	err = json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(suite.T(), err, "Failed to unmarshal response")
 	
-	assert.Len(suite.T(), response, 2, "Should return exactly 2 recipes on second page")
+	dataBytes, _ = json.Marshal(response.Data)
+	err = json.Unmarshal(dataBytes, &recipes)
+	require.NoError(suite.T(), err, "Failed to unmarshal recipes data")
+	
+	assert.Len(suite.T(), recipes, 2, "Should return exactly 2 recipes on second page")
+	assert.Equal(suite.T(), 2, response.Pagination.Page)
 }
 
 // TestGetRecipesInvalidPagination tests GET /recipes endpoint with invalid pagination parameters
 func (suite *RecipeAPITestSuite) TestGetRecipesInvalidPagination() {
-	// Test negative limit
+	// Test negative page
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/recipes?limit=-1", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/recipes?page=-1", nil)
 	suite.router.ServeHTTP(w, req)
 
 	assert.Equal(suite.T(), http.StatusBadRequest, w.Code)
 	
-	// Test negative offset
+	// Test page too large
 	w = httptest.NewRecorder()
-	req, _ = http.NewRequest("GET", "/api/v1/recipes?offset=-1", nil)
+	req, _ = http.NewRequest("GET", "/api/v1/recipes?page=20000", nil)
 	suite.router.ServeHTTP(w, req)
 
 	assert.Equal(suite.T(), http.StatusBadRequest, w.Code)
 	
-	// Test non-numeric limit
+	// Test per_page too large
 	w = httptest.NewRecorder()
-	req, _ = http.NewRequest("GET", "/api/v1/recipes?limit=abc", nil)
+	req, _ = http.NewRequest("GET", "/api/v1/recipes?per_page=200", nil)
+	suite.router.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusBadRequest, w.Code)
+	
+	// Test non-numeric page
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest("GET", "/api/v1/recipes?page=abc", nil)
 	suite.router.ServeHTTP(w, req)
 
 	assert.Equal(suite.T(), http.StatusBadRequest, w.Code)

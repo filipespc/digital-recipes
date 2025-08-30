@@ -31,6 +31,7 @@ type RecipeIngredient struct {
 	OriginalText           string   `json:"original_text" db:"original_text"`
 	Quantity               *float64 `json:"quantity,omitempty" db:"quantity"`
 	Unit                   *string  `json:"unit,omitempty" db:"unit"`
+	CanonicalName          *string  `json:"canonical_name,omitempty" db:"canonical_name"`
 	CreatedAt              time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt              time.Time `json:"updated_at" db:"updated_at"`
 }
