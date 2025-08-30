@@ -71,6 +71,29 @@ When implementing features, always reference both the PRD for user requirements 
   - Active participation in test definition is crucial
   - Always start by defining and implementing tests before writing implementation code
 
+## Running the Application
+
+### Backend Services
+**IMPORTANT**: Use Docker Compose to run all backend services (API, database, parser):
+
+```bash
+# Start all backend services
+docker-compose up -d
+
+# Check service status
+docker-compose ps
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+```
+
+**Backend URLs:**
+- API Service: http://localhost:8080
+- Database: localhost:5432 (PostgreSQL)
+
 ### Frontend Server Startup Protocol
 **IMPORTANT**: To avoid timeout issues when starting the Next.js development server, always use background execution:
 
@@ -88,6 +111,15 @@ tail -f dev.log
 pkill -f "npm run dev"
 ```
 
-**Server URLs:**
+**Frontend URLs:**
 - Local: http://localhost:3000
 - Network: http://192.168.15.107:3000 (if localhost doesn't work)
+
+### Full Stack Startup
+```bash
+# Start backend services first
+docker-compose up -d
+
+# Then start frontend
+cd frontend && npm run dev > ../frontend.log 2>&1 &
+```
