@@ -1,25 +1,32 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"digital-recipes/api-service/db"
+	"digital-recipes/api-service/middleware"
 	"digital-recipes/api-service/models"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 )
 
 // RecipeHandler handles recipe-related HTTP requests
 type RecipeHandler struct {
-	db *db.Database
+	db             *db.Database
+	storageService *StorageService
 }
 
 // NewRecipeHandler creates a new recipe handler
-func NewRecipeHandler(database *db.Database) *RecipeHandler {
-	return &RecipeHandler{db: database}
+func NewRecipeHandler(database *db.Database, storageService *StorageService) *RecipeHandler {
+	return &RecipeHandler{
+		db:             database,
+		storageService: storageService,
+	}
 }
 
 // Constants for pagination limits
@@ -37,8 +44,12 @@ func (h *RecipeHandler) GetRecipes(c *gin.Context) {
 	perPageStr := c.DefaultQuery("per_page", strconv.Itoa(defaultPerPage))
 	
 	// Log request parameters
-	log.Printf("GetRecipes request - status: %s, page: %s, per_page: %s, IP: %s", 
-		status, pageStr, perPageStr, c.ClientIP())
+	logrus.WithFields(logrus.Fields{
+		"status":   status,
+		"page":     pageStr,
+		"per_page": perPageStr,
+		"ip":       c.ClientIP(),
+	}).Debug("GetRecipes request")
 
 	// Validate pagination parameters with proper bounds
 	page, err := strconv.Atoi(pageStr)
@@ -91,7 +102,7 @@ func (h *RecipeHandler) GetRecipes(c *gin.Context) {
 	// Execute single query for both data and count
 	rows, err := h.db.DB.Query(query, args...)
 	if err != nil {
-		log.Printf("GetRecipes query error: %v", err)
+		logrus.WithError(err).Error("GetRecipes query error")
 		InternalServerError(c, "failed to retrieve recipes")
 		return
 	}
@@ -115,7 +126,7 @@ func (h *RecipeHandler) GetRecipes(c *gin.Context) {
 			&total, // Total count from window function
 		)
 		if err != nil {
-			log.Printf("GetRecipes scan error: %v", err)
+			logrus.WithError(err).Error("GetRecipes scan error")
 			InternalServerError(c, "failed to parse recipe data")
 			return
 		}
@@ -123,7 +134,7 @@ func (h *RecipeHandler) GetRecipes(c *gin.Context) {
 	}
 
 	if err = rows.Err(); err != nil {
-		log.Printf("GetRecipes rows error: %v", err)
+		logrus.WithError(err).Error("GetRecipes rows error")
 		InternalServerError(c, "error reading recipe data")
 		return
 	}
@@ -155,13 +166,13 @@ func (h *RecipeHandler) GetRecipe(c *gin.Context) {
 	idStr := c.Param("id")
 	recipeID, err := strconv.Atoi(idStr)
 	if err != nil {
-		log.Printf("GetRecipe invalid ID - id: %s, IP: %s", idStr, c.ClientIP())
+		logrus.WithFields(logrus.Fields{"id": idStr, "ip": c.ClientIP()}).Warn("GetRecipe invalid ID")
 		BadRequestError(c, "invalid recipe ID")
 		return
 	}
 	
 	// Log request
-	log.Printf("GetRecipe request - id: %d, IP: %s", recipeID, c.ClientIP())
+	logrus.WithFields(logrus.Fields{"recipe_id": recipeID, "ip": c.ClientIP()}).Debug("GetRecipe request")
 
 	// Query for the specific recipe
 	query := `
@@ -188,7 +199,7 @@ func (h *RecipeHandler) GetRecipe(c *gin.Context) {
 			NotFoundError(c, "recipe not found")
 			return
 		}
-		log.Printf("GetRecipe query error: %v", err)
+		logrus.WithError(err).Error("GetRecipe query error")
 		InternalServerError(c, "failed to retrieve recipe")
 		return
 	}
@@ -213,7 +224,7 @@ func (h *RecipeHandler) GetRecipe(c *gin.Context) {
 
 	ingredientRows, err := h.db.DB.Query(ingredientsQuery, recipeID)
 	if err != nil {
-		log.Printf("GetRecipe ingredients query error: %v", err)
+		logrus.WithError(err).Error("GetRecipe ingredients query error")
 		InternalServerError(c, "failed to retrieve ingredients")
 		return
 	}
@@ -236,7 +247,7 @@ func (h *RecipeHandler) GetRecipe(c *gin.Context) {
 			&canonicalName,
 		)
 		if err != nil {
-			log.Printf("GetRecipe ingredient scan error: %v", err)
+			logrus.WithError(err).Error("GetRecipe ingredient scan error")
 			InternalServerError(c, "failed to parse ingredient data")
 			return
 		}
@@ -257,4 +268,103 @@ func (h *RecipeHandler) GetRecipe(c *gin.Context) {
 
 	// Return standardized response
 	SuccessResponse(c, recipeWithIngredients)
+}
+
+// PostUploadRequest handles POST /recipes/upload-request requests with enhanced security
+func (h *RecipeHandler) PostUploadRequest(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+	
+	// Parse and validate request body
+	var uploadRequest models.UploadRequest
+	if err := c.ShouldBindJSON(&uploadRequest); err != nil {
+		logger.WithError(err).Warn("Upload request binding failed")
+		ValidationError(c, "Invalid request format. Check image_count field.")
+		return
+	}
+
+	// Perform additional business logic validation
+	if err := uploadRequest.Validate(); err != nil {
+		logger.WithError(err).Warn("Upload request validation failed")
+		ValidationError(c, err.Error())
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"image_count":       uploadRequest.ImageCount,
+		"max_file_size_mb":  uploadRequest.GetMaxFileSizeMB(),
+		"allowed_types":     uploadRequest.GetAllowedTypes(),
+		"expiration_hours":  uploadRequest.GetExpirationHours(),
+	}).Info("Processing upload request")
+
+	// Validate storage service is available
+	if h.storageService == nil {
+		logger.Error("Storage service not available")
+		InternalServerError(c, "File upload service is temporarily unavailable")
+		return
+	}
+
+	// Get authenticated user ID (set by auth middleware)
+	userID := middleware.GetUserID(c)
+	if userID == 0 {
+		logger.Error("No authenticated user found")
+		AuthenticationError(c, "Authentication required for file uploads")
+		return
+	}
+
+	// Begin transaction for recipe creation
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tx, err := h.db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		logger.WithError(err).Error("Failed to begin database transaction")
+		InternalServerError(c, "Failed to process upload request")
+		return
+	}
+	defer tx.Rollback()
+
+	// Insert new recipe with processing status
+	var recipeID int
+	query := `
+		INSERT INTO recipes (title, status, user_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id
+	`
+	
+	now := time.Now().UTC()
+	err = tx.QueryRow(query, "Processing Recipe", "processing", userID, now, now).Scan(&recipeID)
+	if err != nil {
+		logger.WithError(err).Error("Failed to create recipe record")
+		DatabaseError(c, err, "create recipe")
+		return
+	}
+
+	// Generate pre-signed upload URLs with enhanced security
+	uploadURLs, err := h.storageService.GenerateUploadURLs(ctx, recipeID, &uploadRequest, c.ClientIP())
+	if err != nil {
+		logger.WithError(err).Error("Failed to generate upload URLs")
+		StorageError(c, err, "generate upload URLs")
+		return
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		logger.WithError(err).Error("Failed to commit transaction")
+		DatabaseError(c, err, "commit recipe creation")
+		return
+	}
+
+	// Create response
+	response := models.UploadResponse{
+		RecipeID:   recipeID,
+		UploadURLs: uploadURLs,
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id":    recipeID,
+		"upload_count": len(uploadURLs),
+	}).Info("Upload request processed successfully")
+
+	// Return standardized response
+	SuccessResponse(c, response)
 }

@@ -58,12 +58,4 @@ func BadRequestError(c *gin.Context, message string) {
 	ErrorResponse(c, http.StatusBadRequest, message)
 }
 
-// NotFoundError sends a 404 error response
-func NotFoundError(c *gin.Context, message string) {
-	ErrorResponse(c, http.StatusNotFound, message)
-}
-
-// InternalServerError sends a 500 error response
-func InternalServerError(c *gin.Context, message string) {
-	ErrorResponse(c, http.StatusInternalServerError, message)
-}
+// Legacy error functions moved to errors.go for better security

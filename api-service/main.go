@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,10 +10,25 @@ import (
 
 	"digital-recipes/api-service/db"
 	"digital-recipes/api-service/handlers"
+	"digital-recipes/api-service/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
+	// Configure structured logging
+	logrus.SetFormatter(&logrus.JSONFormatter{})
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	level, err := logrus.ParseLevel(logLevel)
+	if err != nil {
+		logrus.WithError(err).Warn("Invalid log level, defaulting to info")
+		level = logrus.InfoLevel
+	}
+	logrus.SetLevel(level)
+
 	// Set Gin mode based on environment
 	if os.Getenv("GIN_MODE") != "debug" {
 		gin.SetMode(gin.ReleaseMode)
@@ -22,34 +37,31 @@ func main() {
 	// Initialize database connection
 	database, err := db.NewConnection()
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		logrus.WithError(err).Fatal("Failed to connect to database")
 	}
 	defer database.Close()
 
 	// Run migrations
 	migrationsDir := filepath.Join("db", "migrations")
 	if err := database.RunMigrations(migrationsDir); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+		logrus.WithError(err).Fatal("Failed to run migrations")
 	}
 
-	r := gin.Default()
+	// Initialize authentication configuration
+	authConfig := middleware.NewAuthConfig()
+	logrus.WithFields(logrus.Fields{
+		"jwt_duration": authConfig.TokenDuration,
+		"jwt_issuer":   authConfig.Issuer,
+	}).Info("Authentication configured")
+
+	r := gin.New()
 	
-	// Add request logging middleware
-	r.Use(func(c *gin.Context) {
-		start := time.Now()
-		path := c.Request.URL.Path
-		method := c.Request.Method
-		
-		c.Next()
-		
-		// Log request details
-		end := time.Now()
-		latency := end.Sub(start)
-		status := c.Writer.Status()
-		
-		log.Printf("[%s] %s %s - Status: %d - Duration: %v - IP: %s",
-			method, path, c.Request.URL.RawQuery, status, latency, c.ClientIP())
-	})
+	// Add core middleware (order matters!)
+	r.Use(middleware.RequestIDMiddleware())
+	r.Use(middleware.StructuredLoggingMiddleware())
+	r.Use(middleware.SecurityLoggingMiddleware())
+	r.Use(middleware.CreateGeneralRateLimit())
+	r.Use(gin.Recovery())
 	
 	// Add CORS middleware with environment-based configuration
 	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
@@ -94,29 +106,63 @@ func main() {
 		c.Next()
 	})
 	
+	// Initialize storage service
+	storageService, err := handlers.NewStorageService()
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to initialize storage service, upload functionality will not be available")
+		// Continue without storage service for now (graceful degradation)
+	}
+
 	// Initialize handlers
-	recipeHandler := handlers.NewRecipeHandler(database)
+	recipeHandler := handlers.NewRecipeHandler(database, storageService)
 	
 	r.GET("/health", func(c *gin.Context) {
 		// Check database health
 		dbStatus := "healthy"
 		if err := database.HealthCheck(); err != nil {
 			dbStatus = "unhealthy"
-			log.Printf("Database health check failed: %v", err)
+			logrus.WithError(err).Error("Database health check failed")
+		}
+
+		// Check storage health if available
+		storageStatus := "not_configured"
+		if storageService != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := storageService.HealthCheck(ctx); err != nil {
+				storageStatus = "unhealthy"
+				logrus.WithError(err).Warn("Storage health check failed")
+			} else {
+				storageStatus = "healthy"
+			}
 		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"status":   "healthy",
 			"service":  "digital-recipes-api",
 			"database": dbStatus,
+			"storage":  storageStatus,
+			"version":  "1.0.0",
 		})
 	})
 
-	// API v1 routes
-	v1 := r.Group("/api/v1")
+	// Public API routes (no authentication required)
+	public := r.Group("/api/v1")
 	{
-		v1.GET("/recipes", recipeHandler.GetRecipes)
-		v1.GET("/recipes/:id", recipeHandler.GetRecipe)
+		public.GET("/recipes", recipeHandler.GetRecipes)
+		public.GET("/recipes/:id", recipeHandler.GetRecipe)
+	}
+
+	// Protected API routes (authentication required)
+	protected := r.Group("/api/v1")
+	protected.Use(middleware.OptionalAuthMiddleware(authConfig)) // Optional for backwards compatibility
+	{
+		// Upload endpoints with additional rate limiting
+		uploadGroup := protected.Group("/recipes")
+		uploadGroup.Use(middleware.CreateUploadRateLimit())
+		{
+			uploadGroup.POST("/upload-request", recipeHandler.PostUploadRequest)
+		}
 	}
 
 	port := os.Getenv("PORT")
@@ -124,6 +170,18 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("Starting Digital Recipes API service on :%s", port)
-	log.Fatal(r.Run(":" + port))
+	logrus.WithFields(logrus.Fields{
+		"port":            port,
+		"database_status": "connected",
+		"storage_status":  func() string {
+			if storageService != nil {
+				return "configured"
+			}
+			return "not_configured"
+		}(),
+	}).Info("Starting Digital Recipes API service")
+
+	if err := r.Run(":" + port); err != nil {
+		logrus.WithError(err).Fatal("Failed to start server")
+	}
 }

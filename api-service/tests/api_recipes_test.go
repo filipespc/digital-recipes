@@ -50,7 +50,8 @@ func (suite *RecipeAPITestSuite) SetupSuite() {
 
 	// Set up the router with handlers
 	suite.router = gin.New()
-	recipeHandler := handlers.NewRecipeHandler(suite.db)
+	// Storage service not needed for recipe GET tests
+	recipeHandler := handlers.NewRecipeHandler(suite.db, nil)
 	
 	// Register routes
 	v1 := suite.router.Group("/api/v1")
