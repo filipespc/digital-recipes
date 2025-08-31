@@ -7,8 +7,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-digital_recipes}
       POSTGRES_USER: ${POSTGRES_USER:-dbuser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "5432:5432"
+    # Database port removed from external exposure for security
+    # The database is only accessible from other Docker services
+    # To access for debugging, use: docker exec -it digital-recipes_postgres_1 psql -U dbuser -d digital_recipes
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -21,6 +22,13 @@ services:
     environment:
       - DATABASE_URL=postgres://${POSTGRES_USER:-dbuser}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-digital_recipes}?sslmode=disable
       - GIN_MODE=${GIN_MODE:-release}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-digital-recipes}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME:-digital-recipes-images}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcs-credentials.json
+    volumes:
+      # Mount credentials file for GCS authentication
+      - ${GCS_CREDENTIALS_FILE:-/dev/null}:/app/gcs-credentials.json:ro
 
   parser-service:
     build: ./parser-service

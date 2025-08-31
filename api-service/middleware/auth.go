@@ -31,9 +31,12 @@ type AuthConfig struct {
 func NewAuthConfig() *AuthConfig {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		// Development fallback - in production this should be required
-		secret = "dev-secret-key-change-in-production"
-		logrus.Warn("JWT_SECRET not set, using development fallback")
+		logrus.Fatal("JWT_SECRET environment variable is required - application cannot start without it")
+	}
+	
+	// Validate secret strength
+	if len(secret) < 32 {
+		logrus.Fatal("JWT_SECRET must be at least 32 characters long for security")
 	}
 
 	durationStr := os.Getenv("JWT_DURATION")
@@ -147,29 +150,63 @@ func AuthMiddleware(config *AuthConfig) gin.HandlerFunc {
 	}
 }
 
-// OptionalAuthMiddleware provides authentication but doesn't require it (for backwards compatibility)
+// OptionalAuthMiddleware provides authentication but allows bypass ONLY in development
+// SECURITY WARNING: This bypasses authentication - only use in development!
 func OptionalAuthMiddleware(config *AuthConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Check if we're in development mode
+		isDevelopment := os.Getenv("GIN_MODE") == "debug" || os.Getenv("GIN_MODE") == ""
+		
 		// Try to authenticate if header is present
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			// No auth header - use default user for MVP compatibility
-			c.Set("user_id", 1)
-			c.Set("user_email", "mvp-user@example.com")
-			c.Set("user_name", "MVP User")
-			c.Next()
-			return
+			if isDevelopment {
+				// Development only: use default user for MVP compatibility
+				logrus.WithFields(logrus.Fields{
+					"ip":         c.ClientIP(),
+					"path":       c.Request.URL.Path,
+					"request_id": c.GetHeader("X-Request-ID"),
+				}).Debug("Using development authentication bypass")
+				
+				c.Set("user_id", 1)
+				c.Set("user_email", "mvp-user@example.com")
+				c.Set("user_name", "MVP User")
+				c.Next()
+				return
+			} else {
+				// Production: require authentication
+				logrus.WithFields(logrus.Fields{
+					"ip":         c.ClientIP(),
+					"path":       c.Request.URL.Path,
+					"request_id": c.GetHeader("X-Request-ID"),
+				}).Warn("Authentication required in production mode")
+				
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error": "Authentication required",
+				})
+				c.Abort()
+				return
+			}
 		}
 
 		// Run auth middleware logic
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			// Invalid format - use default user
-			c.Set("user_id", 1)
-			c.Set("user_email", "mvp-user@example.com")
-			c.Set("user_name", "MVP User")
-			c.Next()
-			return
+			if isDevelopment {
+				// Development: fallback to default user
+				c.Set("user_id", 1)
+				c.Set("user_email", "mvp-user@example.com")
+				c.Set("user_name", "MVP User")
+				c.Next()
+				return
+			} else {
+				// Production: reject invalid format
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error": "Invalid authorization header format",
+				})
+				c.Abort()
+				return
+			}
 		}
 
 		tokenString := parts[1]
@@ -187,10 +224,31 @@ func OptionalAuthMiddleware(config *AuthConfig) gin.HandlerFunc {
 				c.Set("user_name", claims.Name)
 			}
 		} else {
-			// Invalid token - use default user for MVP
-			c.Set("user_id", 1)
-			c.Set("user_email", "mvp-user@example.com")
-			c.Set("user_name", "MVP User")
+			if isDevelopment {
+				// Development: fallback to default user for MVP
+				logrus.WithFields(logrus.Fields{
+					"error": err.Error(),
+					"ip":    c.ClientIP(),
+					"request_id": c.GetHeader("X-Request-ID"),
+				}).Debug("JWT validation failed, using development fallback")
+				
+				c.Set("user_id", 1)
+				c.Set("user_email", "mvp-user@example.com")
+				c.Set("user_name", "MVP User")
+			} else {
+				// Production: reject invalid tokens
+				logrus.WithFields(logrus.Fields{
+					"error": err.Error(),
+					"ip":    c.ClientIP(),
+					"request_id": c.GetHeader("X-Request-ID"),
+				}).Warn("JWT validation failed in production")
+				
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error": "Invalid token",
+				})
+				c.Abort()
+				return
+			}
 		}
 
 		c.Next()

@@ -115,7 +115,36 @@ pkill -f "npm run dev"
 - Local: http://localhost:3000
 - Network: http://192.168.15.107:3000 (if localhost doesn't work)
 
-### Full Stack Startup
+**IMPORTANT CORS Configuration:**
+- Always use ONLY `http://localhost:3000` for ALLOWED_ORIGINS
+- Never add additional ports (3001, 3002, etc.) to CORS configuration
+- If Next.js starts on a different port due to conflicts, kill the conflicting process instead of adding new origins
+
+### Full Stack Restart Protocol
+**IMPORTANT**: Always ensure frontend runs on port 3000 for proper CORS configuration:
+
+```bash
+# 1. Stop all services
+docker-compose down
+pkill -f "npm run dev"
+pkill -f "node.*next.*dev"
+
+# 2. Force kill anything using port 3000
+netstat -tulpn 2>/dev/null | grep :3000 | awk '{print $7}' | cut -d'/' -f1 | xargs -r kill -9
+
+# 3. Start backend services first
+docker-compose up -d
+
+# 4. Start frontend on port 3000 (force if needed)
+cd frontend && npm run dev -- --port 3000 > ../frontend.log 2>&1 &
+
+# 5. Verify services
+sleep 3
+curl -f http://localhost:8080/health || echo "Backend not ready"
+curl -f http://localhost:3000 | head -10 || echo "Frontend not ready"
+```
+
+### Full Stack Startup (Initial)
 ```bash
 # Start backend services first
 docker-compose up -d

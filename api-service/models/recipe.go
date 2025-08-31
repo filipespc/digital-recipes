@@ -71,23 +71,51 @@ func (ur *UploadRequest) GetExpirationHours() int {
 
 // Validate performs additional business logic validation
 func (ur *UploadRequest) Validate() error {
-	// Check for reasonable combinations
-	if ur.ImageCount > 5 && ur.GetMaxFileSizeMB() > 20 {
-		return fmt.Errorf("cannot upload more than 5 images when max file size exceeds 20MB")
+	// Enhanced security validation
+	
+	// 1. Strict size and count limits to prevent resource abuse
+	if ur.ImageCount > 5 {
+		return fmt.Errorf("maximum 5 images allowed per upload request")
 	}
 	
-	// Validate file types
+	if ur.GetMaxFileSizeMB() > 25 {
+		return fmt.Errorf("maximum file size is 25MB per image")
+	}
+	
+	// 2. Prevent resource exhaustion attacks
+	totalSizeLimit := ur.ImageCount * ur.GetMaxFileSizeMB()
+	if totalSizeLimit > 100 { // Maximum 100MB total per request
+		return fmt.Errorf("total upload size cannot exceed 100MB (currently %dMB)", totalSizeLimit)
+	}
+	
+	// 3. Validate file types with strict whitelist
 	validTypes := map[string]bool{
 		"image/jpeg": true,
-		"image/jpg":  true,
+		"image/jpg":  true,  // Allow both JPEG variants
 		"image/png":  true,
 		"image/webp": true,
 	}
 	
-	for _, fileType := range ur.GetAllowedTypes() {
+	allowedTypes := ur.GetAllowedTypes()
+	if len(allowedTypes) == 0 {
+		return fmt.Errorf("at least one allowed file type must be specified")
+	}
+	
+	for _, fileType := range allowedTypes {
 		if !validTypes[fileType] {
-			return fmt.Errorf("unsupported file type: %s", fileType)
+			return fmt.Errorf("unsupported file type: %s. Allowed types: image/jpeg, image/png, image/webp", fileType)
 		}
+	}
+	
+	// 4. Validate expiration time is reasonable
+	expirationHours := ur.GetExpirationHours()
+	if expirationHours > 24 {
+		return fmt.Errorf("expiration time cannot exceed 24 hours")
+	}
+	
+	// 5. Additional security checks for suspicious patterns
+	if ur.ImageCount <= 0 {
+		return fmt.Errorf("image count must be positive")
 	}
 	
 	return nil

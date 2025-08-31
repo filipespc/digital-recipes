@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,7 +17,79 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// isOriginAllowed performs secure origin validation with proper URL parsing
+func isOriginAllowed(origin, allowedOrigins string) bool {
+	// Parse the origin URL to validate it's well-formed
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		// Malformed URL is not allowed
+		return false
+	}
+	
+	// Only allow http and https schemes
+	if originURL.Scheme != "http" && originURL.Scheme != "https" {
+		return false
+	}
+	
+	// Prevent subdomain bypasses by ensuring no wildcards in host
+	if strings.Contains(originURL.Host, "*") {
+		return false
+	}
+	
+	// Split allowed origins and validate each one
+	for _, allowedOrigin := range strings.Split(allowedOrigins, ",") {
+		allowedOrigin = strings.TrimSpace(allowedOrigin)
+		
+		// Skip empty origins
+		if allowedOrigin == "" {
+			continue
+		}
+		
+		// Parse allowed origin to ensure it's valid
+		allowedURL, err := url.Parse(allowedOrigin)
+		if err != nil {
+			continue // Skip malformed allowed origins
+		}
+		
+		// Exact match required (scheme, host, and port must match exactly)
+		if originURL.Scheme == allowedURL.Scheme &&
+		   originURL.Host == allowedURL.Host &&
+		   originURL.Port() == allowedURL.Port() {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// validateEnvironment checks for required environment variables and security settings
+func validateEnvironment() {
+	// Validate JWT secret is set
+	if os.Getenv("JWT_SECRET") == "" {
+		logrus.Fatal("JWT_SECRET environment variable is required")
+	}
+	
+	// Validate CORS origins are set properly
+	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
+	if allowedOrigins != "" {
+		// Validate each origin is well-formed
+		for _, origin := range strings.Split(allowedOrigins, ",") {
+			origin = strings.TrimSpace(origin)
+			if origin != "" {
+				if _, err := url.Parse(origin); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"invalid_origin": origin,
+						"error": err.Error(),
+					}).Fatal("Invalid origin in ALLOWED_ORIGINS")
+				}
+			}
+		}
+	}
+}
+
 func main() {
+	// Validate environment before starting
+	validateEnvironment()
 	// Configure structured logging
 	logrus.SetFormatter(&logrus.JSONFormatter{})
 	logLevel := os.Getenv("LOG_LEVEL")
@@ -63,7 +137,7 @@ func main() {
 	r.Use(middleware.CreateGeneralRateLimit())
 	r.Use(gin.Recovery())
 	
-	// Add CORS middleware with environment-based configuration
+	// Add secure CORS middleware with strict origin validation
 	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
 	if allowedOrigins == "" {
 		allowedOrigins = "http://localhost:3000" // Development default
@@ -73,19 +147,28 @@ func main() {
 		origin := c.Request.Header.Get("Origin")
 		allowed := false
 		
-		// Check if origin is in allowed list
-		for _, allowedOrigin := range strings.Split(allowedOrigins, ",") {
-			if strings.TrimSpace(allowedOrigin) == origin {
-				allowed = true
-				break
+		if origin != "" {
+			allowed = isOriginAllowed(origin, allowedOrigins)
+			
+			// Log CORS violations for security monitoring
+			if !allowed {
+				logrus.WithFields(logrus.Fields{
+					"origin":      origin,
+					"client_ip":   c.ClientIP(),
+					"request_id":  c.GetHeader("X-Request-ID"),
+					"user_agent":  c.GetHeader("User-Agent"),
+					"method":      c.Request.Method,
+					"path":        c.Request.URL.Path,
+				}).Warn("CORS violation: Origin not allowed")
 			}
 		}
 		
 		if allowed {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
+			c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, X-Request-ID")
 			c.Header("Access-Control-Allow-Credentials", "true")
+			c.Header("Access-Control-Max-Age", "86400") // 24 hours
 		}
 		
 		if c.Request.Method == "OPTIONS" {
@@ -109,8 +192,17 @@ func main() {
 	// Initialize storage service
 	storageService, err := handlers.NewStorageService()
 	if err != nil {
-		logrus.WithError(err).Warn("Failed to initialize storage service, upload functionality will not be available")
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"gcs_bucket":     os.Getenv("GCS_BUCKET_NAME"),
+			"gcp_project":    os.Getenv("GOOGLE_CLOUD_PROJECT"),
+			"has_credentials": os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "",
+		}).Warn("Failed to initialize Google Cloud Storage service, upload functionality will not be available")
 		// Continue without storage service for now (graceful degradation)
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"gcs_bucket":  os.Getenv("GCS_BUCKET_NAME"),
+			"gcp_project": os.Getenv("GOOGLE_CLOUD_PROJECT"),
+		}).Info("Google Cloud Storage service initialized successfully")
 	}
 
 	// Initialize handlers

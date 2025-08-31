@@ -14,5 +14,8 @@ WORKDIR /root/
 COPY --from=builder /app/main .
 COPY --from=builder /app/db ./db
 
+# Create directories for GCP credentials
+RUN mkdir -p /root/.config/gcloud /app
+
 EXPOSE 8080
 CMD ["./main"]
