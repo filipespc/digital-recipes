@@ -3,7 +3,11 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"math"
+	"math/rand"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +18,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
+
+func init() {
+	// Initialize random seed for jitter calculations
+	rand.Seed(time.Now().UnixNano())
+}
 
 // RecipeHandler handles recipe-related HTTP requests
 type RecipeHandler struct {
@@ -354,6 +363,19 @@ func (h *RecipeHandler) PostUploadRequest(c *gin.Context) {
 		return
 	}
 
+	// Extract image URLs for processing queue (convert signed URLs to GCS URLs)
+	var imageURLs []string
+	for _, uploadURL := range uploadURLs {
+		// Extract the base GCS URL (without query parameters for public access)
+		gcsURL := h.storageService.GetPublicImageURL(recipeID, uploadURL.ImageID, uploadURL.Extension)
+		imageURLs = append(imageURLs, gcsURL)
+	}
+
+	// Enqueue processing job asynchronously
+	go func() {
+		h.enqueueProcessingJob(recipeID, imageURLs)
+	}()
+
 	// Create response
 	response := models.UploadResponse{
 		RecipeID:   recipeID,
@@ -367,4 +389,430 @@ func (h *RecipeHandler) PostUploadRequest(c *gin.Context) {
 
 	// Return standardized response
 	SuccessResponse(c, response)
+}
+
+// UpdateRecipeStatus handles PUT /recipes/:id/status requests
+func (h *RecipeHandler) UpdateRecipeStatus(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse recipe ID from URL parameter
+	idStr := c.Param("id")
+	recipeID, err := strconv.Atoi(idStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{"id": idStr}).Warn("UpdateRecipeStatus invalid ID")
+		BadRequestError(c, "invalid recipe ID")
+		return
+	}
+
+	// Parse request body
+	var statusUpdate struct {
+		Status string `json:"status" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&statusUpdate); err != nil {
+		logger.WithError(err).Warn("Status update binding failed")
+		ValidationError(c, "Invalid request format. Status field is required.")
+		return
+	}
+
+	// Validate status value
+	validStatuses := []string{"processing", "review_required", "published", "failed"}
+	isValid := false
+	for _, validStatus := range validStatuses {
+		if statusUpdate.Status == validStatus {
+			isValid = true
+			break
+		}
+	}
+	if !isValid {
+		BadRequestError(c, fmt.Sprintf("invalid status: %s. Valid statuses are: %s",
+			statusUpdate.Status, strings.Join(validStatuses, ", ")))
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id": recipeID,
+		"status":    statusUpdate.Status,
+	}).Info("Updating recipe status")
+
+	// Update recipe status in database
+	query := `
+		UPDATE recipes
+		SET status = $1, updated_at = $2
+		WHERE id = $3
+	`
+
+	result, err := h.db.DB.Exec(query, statusUpdate.Status, time.Now().UTC(), recipeID)
+	if err != nil {
+		logger.WithError(err).Error("Failed to update recipe status")
+		InternalServerError(c, "failed to update recipe status")
+		return
+	}
+
+	// Check if recipe was found and updated
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		logger.WithError(err).Error("Failed to get rows affected")
+		InternalServerError(c, "failed to verify status update")
+		return
+	}
+
+	if rowsAffected == 0 {
+		NotFoundError(c, "recipe not found")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id": recipeID,
+		"status":    statusUpdate.Status,
+	}).Info("Recipe status updated successfully")
+
+	// Return success response
+	SuccessResponse(c, gin.H{
+		"message":   "Recipe status updated successfully",
+		"recipe_id": recipeID,
+		"status":    statusUpdate.Status,
+	})
+}
+
+// UpdateRecipe handles PUT /recipes/:id requests
+func (h *RecipeHandler) UpdateRecipe(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse recipe ID from URL parameter
+	idStr := c.Param("id")
+	recipeID, err := strconv.Atoi(idStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{"id": idStr}).Warn("UpdateRecipe invalid ID")
+		BadRequestError(c, "invalid recipe ID")
+		return
+	}
+
+	// Parse request body
+	var updateRequest models.RecipeUpdateRequest
+	if err := c.ShouldBindJSON(&updateRequest); err != nil {
+		logger.WithError(err).Warn("Recipe update binding failed")
+		ValidationError(c, "Invalid request format")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id": recipeID,
+		"title":     updateRequest.Title,
+	}).Info("Updating recipe data")
+
+	// Begin transaction
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tx, err := h.db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		logger.WithError(err).Error("Failed to begin transaction")
+		InternalServerError(c, "Failed to update recipe")
+		return
+	}
+	defer tx.Rollback()
+
+	// Convert instructions and tips arrays to strings if provided
+	var instructionsStr *string
+	var tipsStr *string
+
+	if updateRequest.Instructions != nil && len(*updateRequest.Instructions) > 0 {
+		joined := strings.Join(*updateRequest.Instructions, "\n")
+		instructionsStr = &joined
+	}
+
+	if updateRequest.Tips != nil && len(*updateRequest.Tips) > 0 {
+		joined := strings.Join(*updateRequest.Tips, "\n")
+		tipsStr = &joined
+	}
+
+	// Update recipe fields
+	updateQuery := `
+		UPDATE recipes
+		SET title = $1, servings = $2, instructions = $3, tips = $4,
+		    prep_time = $5, cook_time = $6, total_time = $7, notes = $8, updated_at = $9
+		WHERE id = $10
+	`
+
+	result, err := tx.Exec(updateQuery,
+		updateRequest.Title,
+		updateRequest.Servings,
+		instructionsStr,
+		tipsStr,
+		updateRequest.PrepTime,
+		updateRequest.CookTime,
+		updateRequest.TotalTime,
+		updateRequest.Notes,
+		time.Now().UTC(),
+		recipeID,
+	)
+	if err != nil {
+		logger.WithError(err).Error("Failed to update recipe")
+		InternalServerError(c, "failed to update recipe")
+		return
+	}
+
+	// Check if recipe was found and updated
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		logger.WithError(err).Error("Failed to get rows affected")
+		InternalServerError(c, "failed to verify recipe update")
+		return
+	}
+
+	if rowsAffected == 0 {
+		NotFoundError(c, "recipe not found")
+		return
+	}
+
+	// Update ingredients if provided
+	if updateRequest.Ingredients != nil {
+		// Delete existing ingredients
+		deleteQuery := `DELETE FROM recipe_ingredients WHERE recipe_id = $1`
+		_, err = tx.Exec(deleteQuery, recipeID)
+		if err != nil {
+			logger.WithError(err).Error("Failed to delete existing ingredients")
+			InternalServerError(c, "failed to update ingredients")
+			return
+		}
+
+		// Insert new ingredients
+		for _, ingredient := range updateRequest.Ingredients {
+			insertQuery := `
+				INSERT INTO recipe_ingredients (recipe_id, original_text, quantity, unit, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6)
+			`
+
+			// Parse quantity string to extract numeric value
+			var quantityValue interface{}
+			if ingredient.Quantity != nil && *ingredient.Quantity != "" {
+				if parsedQty, err := strconv.ParseFloat(*ingredient.Quantity, 64); err == nil {
+					quantityValue = parsedQty
+				} else {
+					// If parsing fails, store as NULL in database but keep original text
+					quantityValue = nil
+				}
+			} else {
+				quantityValue = nil
+			}
+
+			// Create original text from quantity, unit, and name
+			originalText := ingredient.Name
+			if ingredient.Quantity != nil && *ingredient.Quantity != "" {
+				originalText = *ingredient.Quantity + " " + ingredient.Name
+				if ingredient.Unit != nil && *ingredient.Unit != "" {
+					originalText = *ingredient.Quantity + " " + *ingredient.Unit + " " + ingredient.Name
+				}
+			}
+
+			_, err = tx.Exec(insertQuery,
+				recipeID,
+				originalText,
+				quantityValue,
+				ingredient.Unit,
+				time.Now().UTC(),
+				time.Now().UTC(),
+			)
+			if err != nil {
+				logger.WithError(err).Error("Failed to insert ingredient")
+				InternalServerError(c, "failed to update ingredients")
+				return
+			}
+		}
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		logger.WithError(err).Error("Failed to commit transaction")
+		InternalServerError(c, "failed to update recipe")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id": recipeID,
+	}).Info("Recipe updated successfully")
+
+	// Return success response
+	SuccessResponse(c, gin.H{
+		"message":   "Recipe updated successfully",
+		"recipe_id": recipeID,
+	})
+}
+
+// enqueueProcessingJob sends a processing request to the parser service
+func (h *RecipeHandler) enqueueProcessingJob(recipeID int, imageURLs []string) {
+	logger := logrus.WithFields(logrus.Fields{
+		"recipe_id":   recipeID,
+		"image_count": len(imageURLs),
+	})
+
+	// Verify all images are uploaded before processing
+	if !h.waitForImagesUpload(recipeID, imageURLs, logger) {
+		logger.Error("Images not available after waiting, skipping processing")
+		return
+	}
+
+	logger.Info("All images verified as uploaded, proceeding with processing")
+
+	// Call parser service to enqueue processing
+	parserURL := "http://parser-service:8081/process" // Use Docker service name
+
+	payload := map[string]interface{}{
+		"recipe_id":  fmt.Sprintf("%d", recipeID),
+		"image_urls": imageURLs,
+	}
+
+	// Create HTTP request
+	reqBody, err := json.Marshal(payload)
+	if err != nil {
+		logger.WithError(err).Error("Failed to marshal processing request")
+		return
+	}
+
+	// Make request to parser service
+	resp, err := http.Post(parserURL, "application/json", strings.NewReader(string(reqBody)))
+	if err != nil {
+		logger.WithError(err).Error("Failed to enqueue processing job")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.WithField("status_code", resp.StatusCode).Error("Parser service returned error")
+		return
+	}
+
+	logger.Info("Successfully enqueued recipe processing job")
+}
+
+// waitForImagesUpload verifies that all images are uploaded to GCS before processing
+// Uses exponential backoff with jitter to prevent thundering herd problems
+func (h *RecipeHandler) waitForImagesUpload(recipeID int, imageURLs []string, logger *logrus.Entry) bool {
+	maxRetries := 6
+	baseDelay := 1 * time.Second
+	maxTimeout := 45 * time.Second // Total maximum wait time
+
+	// Create context with timeout to prevent infinite waiting
+	ctx, cancel := context.WithTimeout(context.Background(), maxTimeout)
+	defer cancel()
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Check if context was cancelled
+		select {
+		case <-ctx.Done():
+			logger.WithError(ctx.Err()).Warn("Upload verification cancelled due to timeout")
+			return false
+		default:
+		}
+
+		logger.WithField("attempt", attempt).Info("Checking if images are uploaded")
+
+		allUploaded := true
+		for i, imageURL := range imageURLs {
+			// Check context before each image verification
+			select {
+			case <-ctx.Done():
+				logger.WithError(ctx.Err()).Warn("Upload verification cancelled during image check")
+				return false
+			default:
+			}
+
+			if !h.verifyImageExists(imageURL, logger.WithField("image_index", i)) {
+				allUploaded = false
+				break
+			}
+		}
+
+		if allUploaded {
+			logger.Info("All images verified as uploaded")
+			return true
+		}
+
+		if attempt < maxRetries {
+			// Exponential backoff: delay = baseDelay * 2^(attempt-1)
+			exponentialDelay := time.Duration(float64(baseDelay) * math.Pow(2, float64(attempt-1)))
+
+			// Add jitter: random value between 0 and exponentialDelay/2
+			jitter := time.Duration(rand.Int63n(int64(exponentialDelay / 2)))
+			totalDelay := exponentialDelay + jitter
+
+			// Cap the delay to prevent extremely long waits
+			maxSingleDelay := 10 * time.Second
+			if totalDelay > maxSingleDelay {
+				totalDelay = maxSingleDelay
+			}
+
+			logger.WithFields(logrus.Fields{
+				"retry_in_seconds":    totalDelay.Seconds(),
+				"exponential_delay":   exponentialDelay.Seconds(),
+				"jitter_seconds":      jitter.Seconds(),
+				"attempt":             attempt,
+				"max_retries":         maxRetries,
+			}).Info("Some images not uploaded yet, retrying with exponential backoff")
+
+			// Use context-aware sleep
+			select {
+			case <-ctx.Done():
+				logger.WithError(ctx.Err()).Warn("Upload verification cancelled during retry delay")
+				return false
+			case <-time.After(totalDelay):
+				// Continue to next retry
+			}
+		}
+	}
+
+	logger.WithFields(logrus.Fields{
+		"max_retries":     maxRetries,
+		"total_wait_time": maxTimeout.Seconds(),
+	}).Error("Images not uploaded after maximum retries")
+	return false
+}
+
+// verifyImageExists checks if an image exists in GCS
+func (h *RecipeHandler) verifyImageExists(imageURL string, logger *logrus.Entry) bool {
+	// Parse the GCS URL to extract bucket and object path
+	// Expected format: https://storage.googleapis.com/bucket-name/path/to/object
+	if !strings.HasPrefix(imageURL, "https://storage.googleapis.com/") {
+		logger.WithField("url", imageURL).Warn("Invalid GCS URL format")
+		return false
+	}
+
+	// Extract bucket and object path from URL
+	urlParts := strings.TrimPrefix(imageURL, "https://storage.googleapis.com/")
+	pathParts := strings.SplitN(urlParts, "/", 2)
+	if len(pathParts) != 2 {
+		logger.WithField("url", imageURL).Warn("Could not parse GCS URL")
+		return false
+	}
+
+	bucketName := pathParts[0]
+	objectPath := pathParts[1]
+
+	// Use the storage service to check if the object exists
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	exists, err := h.storageService.ObjectExists(ctx, objectPath)
+	if err != nil {
+		logger.WithError(err).WithFields(logrus.Fields{
+			"bucket": bucketName,
+			"object": objectPath,
+		}).Error("Error checking if image exists in GCS")
+		return false
+	}
+
+	if !exists {
+		logger.WithFields(logrus.Fields{
+			"bucket": bucketName,
+			"object": objectPath,
+		}).Debug("Image not found in GCS")
+		return false
+	}
+
+	logger.WithFields(logrus.Fields{
+		"bucket": bucketName,
+		"object": objectPath,
+	}).Debug("Image verified in GCS")
+	return true
 }

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -61,6 +62,8 @@ func validateContentType(contentType string) bool {
 // This prevents file upload attacks where malicious files have image extensions
 func validateFileSignature(filename, contentType string) error {
 	// Define expected file signatures (magic numbers) for image types
+	// TODO: Implement signature validation in future version
+	/*
 	validSignatures := map[string][]string{
 		"image/jpeg": {
 			"\xFF\xD8\xFF",        // JPEG/JFIF
@@ -74,6 +77,7 @@ func validateFileSignature(filename, contentType string) error {
 			"RIFF",                // WebP starts with RIFF
 		},
 	}
+	*/
 	
 	// Validate content type is supported
 	if !validateContentType(contentType) {
@@ -230,6 +234,7 @@ func (s *StorageService) GenerateUploadURLs(ctx context.Context, recipeID int, u
 			ImageID:   imageID,
 			UploadURL: signedURL,
 			Fields:    make(map[string]string),
+			Extension: extension,
 		}
 
 		// Add required headers and constraints as fields
@@ -248,12 +253,38 @@ func (s *StorageService) GenerateUploadURLs(ctx context.Context, recipeID int, u
 	return uploadURLs, nil
 }
 
+// GetPublicImageURL generates a public URL for an uploaded image
+func (s *StorageService) GetPublicImageURL(recipeID int, imageID, extension string) string {
+	// For Phase 3, we'll use a simpler approach with public GCS URLs
+	// In production, you might want to use signed URLs or a CDN
+	return fmt.Sprintf("https://storage.googleapis.com/%s/recipes/%d/images/%s.%s", s.bucketName, recipeID, imageID, extension)
+}
+
+// ObjectExists checks if an object exists in the GCS bucket
+func (s *StorageService) ObjectExists(ctx context.Context, objectPath string) (bool, error) {
+	bucket := s.gcsClient.Bucket(s.bucketName)
+	obj := bucket.Object(objectPath)
+
+	_, err := obj.Attrs(ctx)
+	if err != nil {
+		// Check if it's a "not found" error vs other errors
+		if err.Error() == "storage: object doesn't exist" ||
+		   strings.Contains(err.Error(), "No such object") ||
+		   strings.Contains(err.Error(), "404") {
+			return false, nil // Object doesn't exist, but no error
+		}
+		return false, fmt.Errorf("error checking object existence: %w", err)
+	}
+
+	return true, nil
+}
+
 // HealthCheck verifies GCS connectivity
 func (s *StorageService) HealthCheck(ctx context.Context) error {
 	// Simple operation to test connectivity
 	bucket := s.gcsClient.Bucket(s.bucketName)
 	_, err := bucket.Attrs(ctx)
-	
+
 	if err != nil {
 		logrus.WithError(err).Error("GCS health check failed")
 		return fmt.Errorf("GCS connectivity check failed: %w", err)

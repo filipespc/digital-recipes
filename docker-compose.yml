@@ -26,16 +26,41 @@ services:
       - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-digital-recipes}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME:-digital-recipes-images}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcs-credentials.json
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_DURATION=${JWT_DURATION:-24h}
+      - JWT_ISSUER=${JWT_ISSUER:-digital-recipes-api}
+      - INTERNAL_SERVICE_SECRET=${INTERNAL_SERVICE_SECRET}
     volumes:
       # Mount credentials file for GCS authentication
       - ${GCS_CREDENTIALS_FILE:-/dev/null}:/app/gcs-credentials.json:ro
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
 
   parser-service:
     build: ./parser-service
     ports:
       - "8081:8081"
+    depends_on:
+      - redis
     environment:
       - API_SERVICE_URL=http://api-service:8080
+      - REDIS_URL=redis://redis:6379
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-digital-recipes}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-2000}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.1}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcs-credentials.json
+      - INTERNAL_SERVICE_SECRET=${INTERNAL_SERVICE_SECRET}
+    volumes:
+      # Mount credentials file for GCS authentication
+      - ${GCS_CREDENTIALS_FILE:-/dev/null}:/app/gcs-credentials.json:ro
 
 volumes:
   postgres_data:
+  redis_data:

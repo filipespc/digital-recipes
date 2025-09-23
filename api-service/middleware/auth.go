@@ -302,3 +302,96 @@ func GetUserName(c *gin.Context) string {
 	}
 	return ""
 }
+
+// InternalServiceAuthMiddleware provides authentication for internal service-to-service communication
+// Uses a combination of shared secret and network source validation
+func InternalServiceAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Get internal service secret from environment
+		internalSecret := os.Getenv("INTERNAL_SERVICE_SECRET")
+		if internalSecret == "" {
+			logrus.Fatal("INTERNAL_SERVICE_SECRET environment variable is required for internal endpoints")
+		}
+
+		// Check for internal service header
+		serviceAuth := c.GetHeader("X-Internal-Service-Auth")
+		if serviceAuth == "" {
+			logrus.WithFields(logrus.Fields{
+				"ip":         c.ClientIP(),
+				"path":       c.Request.URL.Path,
+				"method":     c.Request.Method,
+				"request_id": c.GetHeader("X-Request-ID"),
+			}).Warn("Internal service authentication missing")
+
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "Internal service authentication required",
+			})
+			c.Abort()
+			return
+		}
+
+		// Validate service secret
+		if serviceAuth != internalSecret {
+			logrus.WithFields(logrus.Fields{
+				"ip":         c.ClientIP(),
+				"path":       c.Request.URL.Path,
+				"request_id": c.GetHeader("X-Request-ID"),
+			}).Warn("Invalid internal service authentication")
+
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "Invalid internal service authentication",
+			})
+			c.Abort()
+			return
+		}
+
+		// Additional security: Validate request comes from internal Docker network
+		clientIP := c.ClientIP()
+		if !isInternalDockerIP(clientIP) {
+			logrus.WithFields(logrus.Fields{
+				"ip":         clientIP,
+				"path":       c.Request.URL.Path,
+				"request_id": c.GetHeader("X-Request-ID"),
+			}).Warn("Internal service request from external IP blocked")
+
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Internal service access not allowed from external networks",
+			})
+			c.Abort()
+			return
+		}
+
+		logrus.WithFields(logrus.Fields{
+			"ip":         clientIP,
+			"path":       c.Request.URL.Path,
+			"request_id": c.GetHeader("X-Request-ID"),
+		}).Debug("Internal service authentication successful")
+
+		// Set internal service context
+		c.Set("internal_service", true)
+		c.Next()
+	}
+}
+
+// isInternalDockerIP checks if the IP is from Docker's internal network
+func isInternalDockerIP(ip string) bool {
+	// Docker default bridge network is typically 172.17.0.0/16
+	// Docker Compose networks are typically 172.18.0.0/16, 172.19.0.0/16, etc.
+	// Also allow localhost for development
+	if ip == "127.0.0.1" || ip == "::1" {
+		return true
+	}
+
+	// Check for Docker internal networks (172.16.0.0/12)
+	if strings.HasPrefix(ip, "172.") {
+		parts := strings.Split(ip, ".")
+		if len(parts) >= 2 {
+			// Parse second octet to check if it's in range 16-31 (Docker networks)
+			if secondOctet := parts[1]; secondOctet >= "16" && secondOctet <= "31" {
+				return true
+			}
+		}
+	}
+
+	return false
+}

@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -245,6 +244,14 @@ func main() {
 		public.GET("/recipes/:id", recipeHandler.GetRecipe)
 	}
 
+	// Internal service endpoints (authentication required)
+	internal := r.Group("/api/v1/internal")
+	internal.Use(middleware.InternalServiceAuthMiddleware())
+	{
+		internal.PUT("/recipes/:id/status", recipeHandler.UpdateRecipeStatus)
+		internal.PUT("/recipes/:id", recipeHandler.UpdateRecipe)
+	}
+
 	// Protected API routes (authentication required)
 	protected := r.Group("/api/v1")
 	protected.Use(middleware.OptionalAuthMiddleware(authConfig)) // Optional for backwards compatibility
@@ -254,6 +261,13 @@ func main() {
 		uploadGroup.Use(middleware.CreateUploadRateLimit())
 		{
 			uploadGroup.POST("/upload-request", recipeHandler.PostUploadRequest)
+		}
+
+		// Recipe update endpoints for AI processing
+		recipeUpdateGroup := protected.Group("/recipes")
+		{
+			recipeUpdateGroup.PUT("/:id/status", recipeHandler.UpdateRecipeStatus)
+			recipeUpdateGroup.PUT("/:id", recipeHandler.UpdateRecipe)
 		}
 	}
 

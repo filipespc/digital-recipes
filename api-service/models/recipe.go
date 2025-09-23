@@ -132,4 +132,26 @@ type ImageUploadURL struct {
 	ImageID   string `json:"image_id"`
 	UploadURL string `json:"upload_url"`
 	Fields    map[string]string `json:"fields,omitempty"`
+	Extension string `json:"extension,omitempty"` // File extension (jpg, png, webp)
+}
+
+// RecipeUpdateRequest represents a request to update recipe data
+type RecipeUpdateRequest struct {
+	Title        *string                      `json:"title,omitempty"`
+	Servings     *string                      `json:"servings,omitempty"`
+	PrepTime     *string                      `json:"prep_time,omitempty"`
+	CookTime     *string                      `json:"cook_time,omitempty"`
+	TotalTime    *string                      `json:"total_time,omitempty"`
+	Instructions *[]string                    `json:"instructions,omitempty"`
+	Tips         *[]string                    `json:"tips,omitempty"`
+	Notes        *string                      `json:"notes,omitempty"`
+	Ingredients  []ProcessedIngredient        `json:"ingredients,omitempty"`
+}
+
+// ProcessedIngredient represents an ingredient in the processing request
+type ProcessedIngredient struct {
+	Quantity *string `json:"quantity,omitempty"`
+	Unit     *string `json:"unit,omitempty"`
+	Name     string  `json:"name" binding:"required"`
+	Notes    *string `json:"notes,omitempty"`
 }
