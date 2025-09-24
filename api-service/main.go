@@ -242,6 +242,7 @@ func main() {
 	{
 		public.GET("/recipes", recipeHandler.GetRecipes)
 		public.GET("/recipes/:id", recipeHandler.GetRecipe)
+		public.GET("/ingredients/search", recipeHandler.SearchIngredients)
 	}
 
 	// Internal service endpoints (authentication required)
@@ -268,6 +269,20 @@ func main() {
 		{
 			recipeUpdateGroup.PUT("/:id/status", recipeHandler.UpdateRecipeStatus)
 			recipeUpdateGroup.PUT("/:id", recipeHandler.UpdateRecipe)
+
+			// Ingredient management endpoints
+			recipeUpdateGroup.POST("/:id/ingredients", recipeHandler.AddIngredient)
+			recipeUpdateGroup.PUT("/:id/ingredients/:ingredient_id", recipeHandler.UpdateIngredient)
+			recipeUpdateGroup.DELETE("/:id/ingredients/:ingredient_id", recipeHandler.DeleteIngredient)
+
+			// Canonical ingredient linking
+			recipeUpdateGroup.PUT("/:id/ingredients/:ingredient_id/link", recipeHandler.LinkIngredientToCanonical)
+		}
+
+		// Canonical ingredient management
+		ingredientGroup := protected.Group("/ingredients")
+		{
+			ingredientGroup.POST("", recipeHandler.CreateCanonicalIngredient)
 		}
 	}
 

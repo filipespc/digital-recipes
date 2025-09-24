@@ -155,3 +155,12 @@ type ProcessedIngredient struct {
 	Name     string  `json:"name" binding:"required"`
 	Notes    *string `json:"notes,omitempty"`
 }
+
+// CanonicalIngredient represents a canonical ingredient in the system
+type CanonicalIngredient struct {
+	ID         int       `json:"id" db:"id"`
+	Name       string    `json:"name" db:"name"`
+	IsApproved bool      `json:"is_approved" db:"is_approved"`
+	CreatedAt  time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at" db:"updated_at"`
+}

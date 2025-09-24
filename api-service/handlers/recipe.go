@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
 	"math"
 	"math/rand"
 	"net/http"
@@ -44,6 +45,79 @@ const (
 	defaultPerPage = 10
 	maxPage        = 10000 // Prevent excessive offset calculations
 )
+
+// Constants for ingredient quantity validation
+const (
+	maxQuantity = 999999.0 // Maximum allowed quantity value
+	minQuantity = 0.0      // Minimum allowed quantity value
+)
+
+// parseAndValidateQuantity safely parses and validates ingredient quantity values
+// Returns the parsed quantity as interface{} (float64 or nil) and any validation error
+func parseAndValidateQuantity(quantityStr *string) (interface{}, error) {
+	// Handle nil or empty quantity
+	if quantityStr == nil || strings.TrimSpace(*quantityStr) == "" {
+		return nil, nil
+	}
+
+	// Parse the quantity string
+	parsedQty, err := strconv.ParseFloat(strings.TrimSpace(*quantityStr), 64)
+	if err != nil {
+		// If parsing fails, return nil to store as NULL in database
+		// This preserves the original text while allowing the system to continue
+		return nil, nil
+	}
+
+	// Validate for special float values
+	if math.IsInf(parsedQty, 0) || math.IsNaN(parsedQty) {
+		return nil, fmt.Errorf("invalid quantity value: %s", *quantityStr)
+	}
+
+	// Validate quantity bounds
+	if parsedQty < minQuantity {
+		return nil, fmt.Errorf("quantity must be positive, got: %f", parsedQty)
+	}
+
+	if parsedQty > maxQuantity {
+		return nil, fmt.Errorf("quantity too large, maximum allowed: %f, got: %f", maxQuantity, parsedQty)
+	}
+
+	return parsedQty, nil
+}
+
+// sanitizeAndValidateIngredientName cleans and validates ingredient names
+// Returns the sanitized name and any validation error
+func sanitizeAndValidateIngredientName(name string) (string, error) {
+	// Trim whitespace
+	sanitized := strings.TrimSpace(name)
+
+	// Check minimum length
+	if len(sanitized) < 2 {
+		return "", fmt.Errorf("ingredient name must be at least 2 characters long")
+	}
+
+	// Check maximum length
+	if len(sanitized) > 100 {
+		return "", fmt.Errorf("ingredient name must be less than 100 characters")
+	}
+
+	// Check for potentially dangerous characters
+	if strings.ContainsAny(sanitized, "<>\"'&") {
+		return "", fmt.Errorf("ingredient name contains invalid characters")
+	}
+
+	// HTML escape to prevent XSS (even though we validate above, defense in depth)
+	sanitized = html.EscapeString(sanitized)
+
+	// Additional validation for suspicious patterns
+	if strings.Contains(strings.ToLower(sanitized), "script") ||
+	   strings.Contains(strings.ToLower(sanitized), "javascript") ||
+	   strings.Contains(strings.ToLower(sanitized), "onload") {
+		return "", fmt.Errorf("ingredient name contains suspicious content")
+	}
+
+	return sanitized, nil
+}
 
 // GetRecipes handles GET /recipes requests
 func (h *RecipeHandler) GetRecipes(c *gin.Context) {
@@ -488,6 +562,11 @@ func (h *RecipeHandler) UpdateRecipe(c *gin.Context) {
 		return
 	}
 
+	// Verify recipe ownership
+	if !h.verifyRecipeOwnership(c, recipeID) {
+		return
+	}
+
 	// Parse request body
 	var updateRequest models.RecipeUpdateRequest
 	if err := c.ShouldBindJSON(&updateRequest); err != nil {
@@ -579,22 +658,29 @@ func (h *RecipeHandler) UpdateRecipe(c *gin.Context) {
 
 		// Insert new ingredients
 		for _, ingredient := range updateRequest.Ingredients {
+			// Sanitize and validate ingredient name
+			sanitizedName, err := sanitizeAndValidateIngredientName(ingredient.Name)
+			if err != nil {
+				logger.WithError(err).WithField("raw_name", ingredient.Name).Warn("Invalid ingredient name in UpdateRecipe")
+				ValidationError(c, fmt.Sprintf("Invalid ingredient name: %s", err.Error()))
+				return
+			}
+			ingredient.Name = sanitizedName
+
 			insertQuery := `
 				INSERT INTO recipe_ingredients (recipe_id, original_text, quantity, unit, created_at, updated_at)
 				VALUES ($1, $2, $3, $4, $5, $6)
 			`
 
-			// Parse quantity string to extract numeric value
-			var quantityValue interface{}
-			if ingredient.Quantity != nil && *ingredient.Quantity != "" {
-				if parsedQty, err := strconv.ParseFloat(*ingredient.Quantity, 64); err == nil {
-					quantityValue = parsedQty
-				} else {
-					// If parsing fails, store as NULL in database but keep original text
-					quantityValue = nil
-				}
-			} else {
-				quantityValue = nil
+			// Parse and validate quantity
+			quantityValue, err := parseAndValidateQuantity(ingredient.Quantity)
+			if err != nil {
+				logger.WithError(err).WithFields(logrus.Fields{
+					"ingredient_name": ingredient.Name,
+					"quantity":        ingredient.Quantity,
+				}).Error("Invalid quantity value in ingredient")
+				ValidationError(c, fmt.Sprintf("Invalid quantity for ingredient '%s': %s", ingredient.Name, err.Error()))
+				return
 			}
 
 			// Create original text from quantity, unit, and name
@@ -815,4 +901,660 @@ func (h *RecipeHandler) verifyImageExists(imageURL string, logger *logrus.Entry)
 		"object": objectPath,
 	}).Debug("Image verified in GCS")
 	return true
+}
+
+// verifyRecipeOwnership checks if the authenticated user owns the specified recipe
+func (h *RecipeHandler) verifyRecipeOwnership(c *gin.Context, recipeID int) bool {
+	logger := middleware.LogWithContext(c)
+
+	userID := middleware.GetUserID(c)
+	if userID == 0 {
+		logger.Warn("No authenticated user found for recipe ownership check")
+		BadRequestError(c, "authentication required")
+		return false
+	}
+
+	var ownerID int
+	query := `SELECT user_id FROM recipes WHERE id = $1`
+	err := h.db.DB.QueryRow(query, recipeID).Scan(&ownerID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			logger.WithFields(logrus.Fields{
+				"recipe_id": recipeID,
+				"user_id":   userID,
+			}).Warn("Recipe not found during ownership check")
+			NotFoundError(c, "recipe not found")
+		} else {
+			logger.WithError(err).Error("Failed to verify recipe ownership")
+			InternalServerError(c, "failed to verify recipe ownership")
+		}
+		return false
+	}
+
+	if ownerID != userID {
+		logger.WithFields(logrus.Fields{
+			"recipe_id":    recipeID,
+			"owner_id":     ownerID,
+			"requesting_user_id": userID,
+		}).Warn("Access denied: user does not own recipe")
+		BadRequestError(c, "access to this recipe is forbidden")
+		return false
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id": recipeID,
+		"user_id":   userID,
+	}).Debug("Recipe ownership verified")
+
+	return true
+}
+
+// AddIngredient handles POST /recipes/:id/ingredients requests
+func (h *RecipeHandler) AddIngredient(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse recipe ID from URL parameter
+	idStr := c.Param("id")
+	recipeID, err := strconv.Atoi(idStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{"id": idStr}).Warn("AddIngredient invalid recipe ID")
+		BadRequestError(c, "invalid recipe ID")
+		return
+	}
+
+	// Verify recipe ownership
+	if !h.verifyRecipeOwnership(c, recipeID) {
+		return
+	}
+
+	// Parse request body
+	var ingredient models.ProcessedIngredient
+	if err := c.ShouldBindJSON(&ingredient); err != nil {
+		logger.WithError(err).Warn("Add ingredient binding failed")
+		ValidationError(c, "Invalid ingredient format")
+		return
+	}
+
+	// Sanitize and validate ingredient name
+	sanitizedName, err := sanitizeAndValidateIngredientName(ingredient.Name)
+	if err != nil {
+		logger.WithError(err).WithField("raw_name", ingredient.Name).Warn("Invalid ingredient name in AddIngredient")
+		ValidationError(c, fmt.Sprintf("Invalid ingredient name: %s", err.Error()))
+		return
+	}
+	ingredient.Name = sanitizedName
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id": recipeID,
+		"name":      ingredient.Name,
+	}).Info("Adding ingredient to recipe")
+
+	// Check if recipe exists
+	var recipeExists bool
+	checkQuery := `SELECT EXISTS(SELECT 1 FROM recipes WHERE id = $1)`
+	err = h.db.DB.QueryRow(checkQuery, recipeID).Scan(&recipeExists)
+	if err != nil {
+		logger.WithError(err).Error("Failed to check recipe existence")
+		InternalServerError(c, "failed to verify recipe")
+		return
+	}
+	if !recipeExists {
+		NotFoundError(c, "recipe not found")
+		return
+	}
+
+	// Parse and validate quantity
+	quantityValue, err := parseAndValidateQuantity(ingredient.Quantity)
+	if err != nil {
+		logger.WithError(err).WithFields(logrus.Fields{
+			"ingredient_name": ingredient.Name,
+			"quantity":        ingredient.Quantity,
+		}).Error("Invalid quantity value in AddIngredient")
+		ValidationError(c, fmt.Sprintf("Invalid quantity for ingredient '%s': %s", ingredient.Name, err.Error()))
+		return
+	}
+
+	// Create original text from quantity, unit, and name
+	originalText := ingredient.Name
+	if ingredient.Quantity != nil && *ingredient.Quantity != "" {
+		originalText = *ingredient.Quantity + " " + ingredient.Name
+		if ingredient.Unit != nil && *ingredient.Unit != "" {
+			originalText = *ingredient.Quantity + " " + *ingredient.Unit + " " + ingredient.Name
+		}
+	}
+
+	// Insert ingredient
+	insertQuery := `
+		INSERT INTO recipe_ingredients (recipe_id, original_text, quantity, unit, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id
+	`
+
+	var ingredientID int
+	now := time.Now().UTC()
+	err = h.db.DB.QueryRow(insertQuery,
+		recipeID,
+		originalText,
+		quantityValue,
+		ingredient.Unit,
+		now,
+		now,
+	).Scan(&ingredientID)
+
+	if err != nil {
+		logger.WithError(err).Error("Failed to insert ingredient")
+		InternalServerError(c, "failed to add ingredient")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id":     recipeID,
+		"ingredient_id": ingredientID,
+	}).Info("Ingredient added successfully")
+
+	// Return success response with the new ingredient ID
+	SuccessResponse(c, gin.H{
+		"message":       "Ingredient added successfully",
+		"recipe_id":     recipeID,
+		"ingredient_id": ingredientID,
+	})
+}
+
+// UpdateIngredient handles PUT /recipes/:id/ingredients/:ingredient_id requests
+func (h *RecipeHandler) UpdateIngredient(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse recipe ID and ingredient ID from URL parameters
+	recipeIDStr := c.Param("id")
+	ingredientIDStr := c.Param("ingredient_id")
+
+	recipeID, err := strconv.Atoi(recipeIDStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{"recipe_id": recipeIDStr}).Warn("UpdateIngredient invalid recipe ID")
+		BadRequestError(c, "invalid recipe ID")
+		return
+	}
+
+	ingredientID, err := strconv.Atoi(ingredientIDStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{"ingredient_id": ingredientIDStr}).Warn("UpdateIngredient invalid ingredient ID")
+		BadRequestError(c, "invalid ingredient ID")
+		return
+	}
+
+	// Verify recipe ownership
+	if !h.verifyRecipeOwnership(c, recipeID) {
+		return
+	}
+
+	// Parse request body
+	var ingredient models.ProcessedIngredient
+	if err := c.ShouldBindJSON(&ingredient); err != nil {
+		logger.WithError(err).Warn("Update ingredient binding failed")
+		ValidationError(c, "Invalid ingredient format")
+		return
+	}
+
+	// Sanitize and validate ingredient name
+	sanitizedName, err := sanitizeAndValidateIngredientName(ingredient.Name)
+	if err != nil {
+		logger.WithError(err).WithField("raw_name", ingredient.Name).Warn("Invalid ingredient name in UpdateIngredient")
+		ValidationError(c, fmt.Sprintf("Invalid ingredient name: %s", err.Error()))
+		return
+	}
+	ingredient.Name = sanitizedName
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id":     recipeID,
+		"ingredient_id": ingredientID,
+		"name":          ingredient.Name,
+	}).Info("Updating ingredient")
+
+	// Check if ingredient exists and belongs to the recipe
+	var ingredientExists bool
+	checkQuery := `SELECT EXISTS(SELECT 1 FROM recipe_ingredients WHERE id = $1 AND recipe_id = $2)`
+	err = h.db.DB.QueryRow(checkQuery, ingredientID, recipeID).Scan(&ingredientExists)
+	if err != nil {
+		logger.WithError(err).Error("Failed to check ingredient existence")
+		InternalServerError(c, "failed to verify ingredient")
+		return
+	}
+	if !ingredientExists {
+		NotFoundError(c, "ingredient not found")
+		return
+	}
+
+	// Parse and validate quantity
+	quantityValue, err := parseAndValidateQuantity(ingredient.Quantity)
+	if err != nil {
+		logger.WithError(err).WithFields(logrus.Fields{
+			"ingredient_name": ingredient.Name,
+			"quantity":        ingredient.Quantity,
+		}).Error("Invalid quantity value in UpdateIngredient")
+		ValidationError(c, fmt.Sprintf("Invalid quantity for ingredient '%s': %s", ingredient.Name, err.Error()))
+		return
+	}
+
+	// Create original text from quantity, unit, and name
+	originalText := ingredient.Name
+	if ingredient.Quantity != nil && *ingredient.Quantity != "" {
+		originalText = *ingredient.Quantity + " " + ingredient.Name
+		if ingredient.Unit != nil && *ingredient.Unit != "" {
+			originalText = *ingredient.Quantity + " " + *ingredient.Unit + " " + ingredient.Name
+		}
+	}
+
+	// Update ingredient
+	updateQuery := `
+		UPDATE recipe_ingredients
+		SET original_text = $1, quantity = $2, unit = $3, updated_at = $4
+		WHERE id = $5 AND recipe_id = $6
+	`
+
+	result, err := h.db.DB.Exec(updateQuery,
+		originalText,
+		quantityValue,
+		ingredient.Unit,
+		time.Now().UTC(),
+		ingredientID,
+		recipeID,
+	)
+
+	if err != nil {
+		logger.WithError(err).Error("Failed to update ingredient")
+		InternalServerError(c, "failed to update ingredient")
+		return
+	}
+
+	// Check if ingredient was updated
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		logger.WithError(err).Error("Failed to get rows affected")
+		InternalServerError(c, "failed to verify ingredient update")
+		return
+	}
+
+	if rowsAffected == 0 {
+		NotFoundError(c, "ingredient not found")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id":     recipeID,
+		"ingredient_id": ingredientID,
+	}).Info("Ingredient updated successfully")
+
+	// Return success response
+	SuccessResponse(c, gin.H{
+		"message":       "Ingredient updated successfully",
+		"recipe_id":     recipeID,
+		"ingredient_id": ingredientID,
+	})
+}
+
+// DeleteIngredient handles DELETE /recipes/:id/ingredients/:ingredient_id requests
+func (h *RecipeHandler) DeleteIngredient(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse recipe ID and ingredient ID from URL parameters
+	recipeIDStr := c.Param("id")
+	ingredientIDStr := c.Param("ingredient_id")
+
+	recipeID, err := strconv.Atoi(recipeIDStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{"recipe_id": recipeIDStr}).Warn("DeleteIngredient invalid recipe ID")
+		BadRequestError(c, "invalid recipe ID")
+		return
+	}
+
+	ingredientID, err := strconv.Atoi(ingredientIDStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{"ingredient_id": ingredientIDStr}).Warn("DeleteIngredient invalid ingredient ID")
+		BadRequestError(c, "invalid ingredient ID")
+		return
+	}
+
+	// Verify recipe ownership
+	if !h.verifyRecipeOwnership(c, recipeID) {
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id":     recipeID,
+		"ingredient_id": ingredientID,
+	}).Info("Deleting ingredient")
+
+	// Delete ingredient (with recipe_id check to ensure it belongs to the recipe)
+	deleteQuery := `DELETE FROM recipe_ingredients WHERE id = $1 AND recipe_id = $2`
+
+	result, err := h.db.DB.Exec(deleteQuery, ingredientID, recipeID)
+	if err != nil {
+		logger.WithError(err).Error("Failed to delete ingredient")
+		InternalServerError(c, "failed to delete ingredient")
+		return
+	}
+
+	// Check if ingredient was deleted
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		logger.WithError(err).Error("Failed to get rows affected")
+		InternalServerError(c, "failed to verify ingredient deletion")
+		return
+	}
+
+	if rowsAffected == 0 {
+		NotFoundError(c, "ingredient not found")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id":     recipeID,
+		"ingredient_id": ingredientID,
+	}).Info("Ingredient deleted successfully")
+
+	// Return success response
+	SuccessResponse(c, gin.H{
+		"message":       "Ingredient deleted successfully",
+		"recipe_id":     recipeID,
+		"ingredient_id": ingredientID,
+	})
+}
+
+// SearchIngredients handles GET /ingredients/search requests
+func (h *RecipeHandler) SearchIngredients(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse query parameter
+	query := c.Query("q")
+	if query == "" {
+		BadRequestError(c, "query parameter 'q' is required")
+		return
+	}
+
+	// Parse limit parameter (default to 20, max 100)
+	limitStr := c.DefaultQuery("limit", "20")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit < 1 || limit > 100 {
+		BadRequestError(c, "invalid limit parameter. Must be between 1 and 100")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"query": query,
+		"limit": limit,
+	}).Debug("Searching canonical ingredients")
+
+	// Search canonical ingredients using fuzzy matching (ILIKE for PostgreSQL)
+	// This supports partial matches and is case-insensitive
+	searchQuery := `
+		SELECT id, name, is_approved, created_at, updated_at
+		FROM canonical_ingredients
+		WHERE name ILIKE '%' || $1 || '%'
+		ORDER BY
+			-- Exact matches first
+			CASE WHEN LOWER(name) = LOWER($1) THEN 1 ELSE 2 END,
+			-- Then by length (shorter names first for closer matches)
+			LENGTH(name),
+			-- Finally alphabetically
+			name
+		LIMIT $2
+	`
+
+	rows, err := h.db.DB.Query(searchQuery, query, limit)
+	if err != nil {
+		logger.WithError(err).Error("Failed to search ingredients")
+		InternalServerError(c, "failed to search ingredients")
+		return
+	}
+	defer rows.Close()
+
+	var ingredients []models.CanonicalIngredient
+	for rows.Next() {
+		var ingredient models.CanonicalIngredient
+		err := rows.Scan(
+			&ingredient.ID,
+			&ingredient.Name,
+			&ingredient.IsApproved,
+			&ingredient.CreatedAt,
+			&ingredient.UpdatedAt,
+		)
+		if err != nil {
+			logger.WithError(err).Error("Failed to scan ingredient")
+			InternalServerError(c, "failed to parse ingredient data")
+			return
+		}
+		ingredients = append(ingredients, ingredient)
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.WithError(err).Error("Rows iteration error")
+		InternalServerError(c, "error reading ingredient data")
+		return
+	}
+
+	// Return empty array if no ingredients found
+	if ingredients == nil {
+		ingredients = []models.CanonicalIngredient{}
+	}
+
+	logger.WithFields(logrus.Fields{
+		"query":        query,
+		"result_count": len(ingredients),
+	}).Debug("Ingredient search completed")
+
+	// Return standardized response
+	SuccessResponse(c, ingredients)
+}
+
+// LinkIngredientToCanonical handles PUT /recipes/:id/ingredients/:ingredient_id/link requests
+func (h *RecipeHandler) LinkIngredientToCanonical(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse recipe ID and ingredient ID from URL parameters
+	recipeIDStr := c.Param("id")
+	ingredientIDStr := c.Param("ingredient_id")
+
+	recipeID, err := strconv.Atoi(recipeIDStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{"recipe_id": recipeIDStr}).Warn("LinkIngredientToCanonical invalid recipe ID")
+		BadRequestError(c, "invalid recipe ID")
+		return
+	}
+
+	ingredientID, err := strconv.Atoi(ingredientIDStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{"ingredient_id": ingredientIDStr}).Warn("LinkIngredientToCanonical invalid ingredient ID")
+		BadRequestError(c, "invalid ingredient ID")
+		return
+	}
+
+	// Verify recipe ownership
+	if !h.verifyRecipeOwnership(c, recipeID) {
+		return
+	}
+
+	// Parse request body
+	var linkRequest struct {
+		CanonicalIngredientID int `json:"canonical_ingredient_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&linkRequest); err != nil {
+		logger.WithError(err).Warn("Link ingredient binding failed")
+		ValidationError(c, "Invalid request format. canonical_ingredient_id is required.")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id":               recipeID,
+		"ingredient_id":           ingredientID,
+		"canonical_ingredient_id": linkRequest.CanonicalIngredientID,
+	}).Info("Linking ingredient to canonical ingredient")
+
+	// Check if ingredient exists and belongs to the recipe
+	var ingredientExists bool
+	checkQuery := `SELECT EXISTS(SELECT 1 FROM recipe_ingredients WHERE id = $1 AND recipe_id = $2)`
+	err = h.db.DB.QueryRow(checkQuery, ingredientID, recipeID).Scan(&ingredientExists)
+	if err != nil {
+		logger.WithError(err).Error("Failed to check ingredient existence")
+		InternalServerError(c, "failed to verify ingredient")
+		return
+	}
+	if !ingredientExists {
+		NotFoundError(c, "ingredient not found")
+		return
+	}
+
+	// Check if canonical ingredient exists
+	var canonicalExists bool
+	checkCanonicalQuery := `SELECT EXISTS(SELECT 1 FROM canonical_ingredients WHERE id = $1)`
+	err = h.db.DB.QueryRow(checkCanonicalQuery, linkRequest.CanonicalIngredientID).Scan(&canonicalExists)
+	if err != nil {
+		logger.WithError(err).Error("Failed to check canonical ingredient existence")
+		InternalServerError(c, "failed to verify canonical ingredient")
+		return
+	}
+	if !canonicalExists {
+		NotFoundError(c, "canonical ingredient not found")
+		return
+	}
+
+	// Update the ingredient to link it to the canonical ingredient
+	updateQuery := `
+		UPDATE recipe_ingredients
+		SET canonical_ingredient_id = $1, updated_at = $2
+		WHERE id = $3 AND recipe_id = $4
+	`
+
+	result, err := h.db.DB.Exec(updateQuery,
+		linkRequest.CanonicalIngredientID,
+		time.Now().UTC(),
+		ingredientID,
+		recipeID,
+	)
+
+	if err != nil {
+		logger.WithError(err).Error("Failed to link ingredient")
+		InternalServerError(c, "failed to link ingredient")
+		return
+	}
+
+	// Check if ingredient was updated
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		logger.WithError(err).Error("Failed to get rows affected")
+		InternalServerError(c, "failed to verify ingredient link")
+		return
+	}
+
+	if rowsAffected == 0 {
+		NotFoundError(c, "ingredient not found")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id":               recipeID,
+		"ingredient_id":           ingredientID,
+		"canonical_ingredient_id": linkRequest.CanonicalIngredientID,
+	}).Info("Ingredient linked to canonical ingredient successfully")
+
+	// Return success response
+	SuccessResponse(c, gin.H{
+		"message":                 "Ingredient linked successfully",
+		"recipe_id":               recipeID,
+		"ingredient_id":           ingredientID,
+		"canonical_ingredient_id": linkRequest.CanonicalIngredientID,
+	})
+}
+
+// CreateCanonicalIngredient handles POST /ingredients requests
+func (h *RecipeHandler) CreateCanonicalIngredient(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse request body
+	var ingredientRequest struct {
+		Name       string `json:"name" binding:"required"`
+		IsApproved *bool  `json:"is_approved,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&ingredientRequest); err != nil {
+		logger.WithError(err).Warn("Create canonical ingredient binding failed")
+		ValidationError(c, "Invalid request format. name is required.")
+		return
+	}
+
+	// Sanitize and validate ingredient name
+	sanitizedName, err := sanitizeAndValidateIngredientName(ingredientRequest.Name)
+	if err != nil {
+		logger.WithError(err).WithField("raw_name", ingredientRequest.Name).Warn("Invalid ingredient name")
+		ValidationError(c, err.Error())
+		return
+	}
+	ingredientRequest.Name = sanitizedName
+
+	// Set default value for IsApproved if not provided
+	isApproved := false
+	if ingredientRequest.IsApproved != nil {
+		isApproved = *ingredientRequest.IsApproved
+	}
+
+	logger.WithFields(logrus.Fields{
+		"name":        ingredientRequest.Name,
+		"is_approved": isApproved,
+	}).Info("Creating canonical ingredient")
+
+	// Check if ingredient already exists (case-insensitive)
+	var existingID int
+	checkQuery := `SELECT id FROM canonical_ingredients WHERE LOWER(name) = LOWER($1)`
+	err = h.db.DB.QueryRow(checkQuery, ingredientRequest.Name).Scan(&existingID)
+	if err == nil {
+		// Ingredient already exists, return the existing one
+		logger.WithFields(logrus.Fields{
+			"existing_id": existingID,
+			"name":        ingredientRequest.Name,
+		}).Info("Canonical ingredient already exists")
+
+		SuccessResponse(c, gin.H{
+			"message": "Canonical ingredient already exists",
+			"id":      existingID,
+			"name":    ingredientRequest.Name,
+		})
+		return
+	} else if err != sql.ErrNoRows {
+		logger.WithError(err).Error("Failed to check existing ingredient")
+		InternalServerError(c, "failed to check existing ingredient")
+		return
+	}
+
+	// Insert new canonical ingredient
+	insertQuery := `
+		INSERT INTO canonical_ingredients (name, is_approved, created_at, updated_at)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id
+	`
+
+	var ingredientID int
+	now := time.Now().UTC()
+	err = h.db.DB.QueryRow(insertQuery,
+		ingredientRequest.Name,
+		isApproved,
+		now,
+		now,
+	).Scan(&ingredientID)
+
+	if err != nil {
+		logger.WithError(err).Error("Failed to create canonical ingredient")
+		InternalServerError(c, "failed to create canonical ingredient")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"ingredient_id": ingredientID,
+		"name":          ingredientRequest.Name,
+	}).Info("Canonical ingredient created successfully")
+
+	// Return success response
+	SuccessResponse(c, gin.H{
+		"message":     "Canonical ingredient created successfully",
+		"id":          ingredientID,
+		"name":        ingredientRequest.Name,
+		"is_approved": isApproved,
+	})
 }
