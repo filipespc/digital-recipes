@@ -64,13 +64,24 @@ export default function RecipeDetailPage({ params }: RecipeDetailPageProps) {
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        <div className="mb-6">
+        <div className="mb-6 flex items-center justify-between">
           <Link
             href="/recipes"
             className="text-blue-600 hover:text-blue-800 font-medium"
           >
             ← Back to Recipes
           </Link>
+          {(recipe.status === 'review_required' || recipe.status === 'published') && (
+            <Link
+              href={`/recipes/${recipe.id}/edit`}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              Edit Recipe
+            </Link>
+          )}
         </div>
 
         <article className="bg-white rounded-lg shadow-sm border border-gray-200">

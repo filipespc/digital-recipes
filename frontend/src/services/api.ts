@@ -53,8 +53,31 @@ export class RecipeAPI {
   }
 
   static async updateRecipe(id: number, recipe: Partial<Recipe>): Promise<Recipe> {
-    const response = await apiClient.put<Recipe>(`/recipes/${id}`, recipe);
-    return response.data;
+    // Transform the recipe data to match backend expectations
+    const updateData: any = {};
+
+    if (recipe.title !== undefined) {
+      updateData.title = recipe.title;
+    }
+    if (recipe.servings !== undefined) {
+      updateData.servings = recipe.servings;
+    }
+    if (recipe.instructions !== undefined) {
+      // Backend expects instructions as array of strings
+      updateData.instructions = recipe.instructions ? recipe.instructions.split('\n').filter(line => line.trim()) : [];
+    }
+    if (recipe.tips !== undefined) {
+      // Backend expects tips as array of strings
+      updateData.tips = recipe.tips ? recipe.tips.split('\n').filter(line => line.trim()) : [];
+    }
+
+    const response = await apiClient.put<StandardResponse<Recipe>>(`/recipes/${id}`, updateData);
+    return response.data.data;
+  }
+
+  static async updateRecipeStatus(id: number, status: string): Promise<{ recipe_id: number; status: string }> {
+    const response = await apiClient.put<StandardResponse<{ recipe_id: number; status: string }>>(`/recipes/${id}/status`, { status });
+    return response.data.data;
   }
 
   static async requestUpload(imageCount: number): Promise<UploadRequestResponse> {

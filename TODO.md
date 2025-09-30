@@ -161,12 +161,12 @@
 
 **🔐 Production-Ready APIs**: All endpoints include authorization, validation, and security hardening. Multiple recipes can share canonical ingredients for data normalization.
 
-### 4.2 Recipe Edit Interface
-- [ ] **Create recipe edit form** with all recipe fields (title, servings, instructions, tips)
-- [ ] **Implement rich text editor** for instructions with formatting
-- [ ] **Add form validation** and auto-save functionality
-- [ ] **Create save/publish workflow** with status updates
-- [ ] **Test**: Edit recipe details and save changes successfully
+### 4.2 Recipe Edit Interface ✅
+- ✅ **Create recipe edit form** with all recipe fields (title, servings, instructions, tips)
+- ✅ **Add form validation** and auto-save functionality
+- ✅ **Create save/publish workflow** with status updates
+- ✅ **Test**: Edit recipe details and save changes successfully
+- [ ] **Implement rich text editor** for instructions with formatting (deferred to Phase 5)
 
 ### 4.3 Ingredient Management Interface
 - [ ] **Create ingredient list component** with add/remove functionality
