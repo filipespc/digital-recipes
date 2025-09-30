@@ -52,7 +52,7 @@ export class RecipeAPI {
     return response.data.data;
   }
 
-  static async updateRecipe(id: number, recipe: Partial<Recipe>): Promise<Recipe> {
+  static async updateRecipe(id: number, recipe: Partial<Recipe>, signal?: AbortSignal): Promise<Recipe> {
     // Transform the recipe data to match backend expectations
     const updateData: any = {};
 
@@ -71,7 +71,9 @@ export class RecipeAPI {
       updateData.tips = recipe.tips ? recipe.tips.split('\n').filter(line => line.trim()) : [];
     }
 
-    const response = await apiClient.put<StandardResponse<Recipe>>(`/recipes/${id}`, updateData);
+    const response = await apiClient.put<StandardResponse<Recipe>>(`/recipes/${id}`, updateData, {
+      signal // Pass the abort signal to axios
+    });
     return response.data.data;
   }
 

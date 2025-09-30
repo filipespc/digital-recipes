@@ -4,6 +4,7 @@ import { use } from 'react';
 import Link from 'next/link';
 import { useRecipe } from '@/hooks/useRecipes';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import SafeContent from '@/components/SafeContent';
 
 interface RecipeDetailPageProps {
   params: Promise<{ id: string }>;
@@ -88,10 +89,21 @@ export default function RecipeDetailPage({ params }: RecipeDetailPageProps) {
           <header className="px-6 py-6 border-b border-gray-200">
             <div className="flex items-start justify-between">
               <div>
-                <h1 className="text-3xl font-bold text-gray-900">{recipe.title}</h1>
+                <h1 className="text-3xl font-bold text-gray-900">
+                  <SafeContent
+                    content={recipe.title}
+                    className=""
+                    preserveWhitespace={false}
+                  />
+                </h1>
                 {recipe.servings && (
                   <p className="mt-2 text-gray-600">
-                    <span className="font-medium">Servings:</span> {recipe.servings}
+                    <span className="font-medium">Servings:</span>{' '}
+                    <SafeContent
+                      content={recipe.servings}
+                      className="inline"
+                      preserveWhitespace={false}
+                    />
                   </p>
                 )}
               </div>
@@ -114,7 +126,11 @@ export default function RecipeDetailPage({ params }: RecipeDetailPageProps) {
                     <li key={ingredient.id || index} className="text-gray-700">
                       <span className="inline-flex items-center">
                         <span className="w-2 h-2 bg-blue-600 rounded-full mr-3 flex-shrink-0"></span>
-                        {ingredient.original_text}
+                        <SafeContent
+                          content={ingredient.original_text}
+                          className="inline"
+                          preserveWhitespace={false}
+                        />
                       </span>
                       {ingredient.quantity && ingredient.unit && (
                         <span className="ml-2 text-sm text-gray-500">
@@ -131,9 +147,11 @@ export default function RecipeDetailPage({ params }: RecipeDetailPageProps) {
               <section className="mb-8">
                 <h2 className="text-xl font-semibold text-gray-900 mb-4">Instructions</h2>
                 <div className="prose max-w-none">
-                  <div className="whitespace-pre-line text-gray-700 leading-relaxed">
-                    {recipe.instructions}
-                  </div>
+                  <SafeContent
+                    content={recipe.instructions}
+                    className="text-gray-700 leading-relaxed"
+                    preserveWhitespace={true}
+                  />
                 </div>
               </section>
             )}
@@ -142,9 +160,11 @@ export default function RecipeDetailPage({ params }: RecipeDetailPageProps) {
               <section className="mb-6">
                 <h2 className="text-xl font-semibold text-gray-900 mb-4">Tips & Observations</h2>
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                  <div className="whitespace-pre-line text-gray-700 leading-relaxed">
-                    {recipe.tips}
-                  </div>
+                  <SafeContent
+                    content={recipe.tips}
+                    className="text-gray-700 leading-relaxed"
+                    preserveWhitespace={true}
+                  />
                 </div>
               </section>
             )}

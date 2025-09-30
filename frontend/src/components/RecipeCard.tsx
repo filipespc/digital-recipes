@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Recipe } from '@/types/recipe';
+import SafeContent from './SafeContent';
 
 interface RecipeCardProps {
   recipe: Recipe;
@@ -37,7 +38,11 @@ export default function RecipeCard({ recipe }: RecipeCardProps) {
             href={`/recipes/${recipe.id}`}
             className="text-lg font-semibold text-gray-900 hover:text-blue-600 transition-colors"
           >
-            {recipe.title}
+            <SafeContent
+              content={recipe.title}
+              className=""
+              preserveWhitespace={false}
+            />
           </Link>
           <span
             className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(
@@ -51,7 +56,12 @@ export default function RecipeCard({ recipe }: RecipeCardProps) {
         <div className="text-sm text-gray-600 space-y-1">
           {recipe.servings && (
             <p>
-              <span className="font-medium">Servings:</span> {recipe.servings}
+              <span className="font-medium">Servings:</span>{' '}
+              <SafeContent
+                content={recipe.servings}
+                className="inline"
+                preserveWhitespace={false}
+              />
             </p>
           )}
           <p>

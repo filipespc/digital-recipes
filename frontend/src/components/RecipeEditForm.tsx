@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Recipe, RecipeWithIngredients } from '@/types/recipe';
 import { RecipeAPI } from '@/services/api';
 
@@ -14,24 +14,85 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Auto-save debounced function
-  const [saveTimeout, setSaveTimeout] = useState<NodeJS.Timeout | null>(null);
+  // Auto-save timeout management using useRef to prevent memory leaks
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Request cancellation to prevent race conditions
+  const saveControllerRef = useRef<AbortController | null>(null);
+  const saveSequenceRef = useRef(0);
 
   const validateField = (name: string, value: string): string | null => {
+    // Basic sanitization
+    const trimmed = value.trim();
+
+    // Security checks - detect potential script injection attempts
+    const dangerousPatterns = [
+      /<script[^>]*>/i,
+      /javascript:/i,
+      /data:text\/html/i,
+      /on\w+\s*=/i, // Event handlers like onclick, onload
+      /<iframe[^>]*>/i,
+      /<object[^>]*>/i,
+      /<embed[^>]*>/i
+    ];
+
+    for (const pattern of dangerousPatterns) {
+      if (pattern.test(value)) {
+        return 'Invalid content detected. HTML/JavaScript is not allowed.';
+      }
+    }
+
     switch (name) {
       case 'title':
-        if (!value.trim()) return 'Title is required';
-        if (value.length > 200) return 'Title must be less than 200 characters';
+        if (!trimmed) return 'Title is required';
+        if (trimmed.length < 3) return 'Title must be at least 3 characters';
+        if (trimmed.length > 200) return 'Title must be less than 200 characters';
+
+        // Check for excessive special characters that might indicate spam
+        const specialCharRatio = (trimmed.match(/[!@#$%^&*()_+={}\[\]|\\:";'<>?,./]/g) || []).length / trimmed.length;
+        if (specialCharRatio > 0.3) return 'Title contains too many special characters';
+
         return null;
+
       case 'servings':
-        if (value && value.length > 50) return 'Servings must be less than 50 characters';
+        if (!value) return null; // Optional field
+        if (trimmed.length > 50) return 'Servings must be less than 50 characters';
+
+        // Basic format validation for servings
+        if (trimmed && !/^[\w\s\-,0-9]+$/.test(trimmed)) {
+          return 'Servings should only contain letters, numbers, spaces, hyphens, and commas';
+        }
+
         return null;
+
       case 'instructions':
-        if (value && value.length > 10000) return 'Instructions must be less than 10,000 characters';
+        if (!value) return null; // Optional field
+        if (trimmed.length > 10000) return 'Instructions must be less than 10,000 characters';
+
+        // Check for reasonable content structure
+        if (trimmed.length > 0) {
+          const lines = trimmed.split('\n').filter(line => line.trim());
+          if (lines.length > 100) return 'Too many instruction steps (max 100 lines)';
+
+          // Check for excessively long lines that might be spam
+          const longLines = lines.filter(line => line.length > 500);
+          if (longLines.length > 0) return 'Individual instruction steps should be shorter than 500 characters';
+        }
+
         return null;
+
       case 'tips':
-        if (value && value.length > 2000) return 'Tips must be less than 2,000 characters';
+        if (!value) return null; // Optional field
+        if (trimmed.length > 2000) return 'Tips must be less than 2,000 characters';
+
+        // Check for reasonable content structure
+        if (trimmed.length > 0) {
+          const lines = trimmed.split('\n').filter(line => line.trim());
+          if (lines.length > 20) return 'Too many tip entries (max 20 lines)';
+        }
+
         return null;
+
       default:
         return null;
     }
@@ -52,14 +113,15 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
     }));
 
     // Clear any existing save timeout
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
     }
 
     // Only auto-save if there are no validation errors
     if (!error) {
       setSaveStatus('saving');
-      const newTimeout = setTimeout(async () => {
+      saveTimeoutRef.current = setTimeout(async () => {
         try {
           await saveRecipe({ [field]: value });
           setSaveStatus('saved');
@@ -70,12 +132,22 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
           setTimeout(() => setSaveStatus('idle'), 3000);
         }
       }, 1000); // 1 second debounce
-
-      setSaveTimeout(newTimeout);
     }
-  }, [saveTimeout]);
+  }, []); // No dependencies needed since we use useRef
 
   const saveRecipe = async (updates: Partial<Recipe>) => {
+    // Cancel previous request if it exists
+    if (saveControllerRef.current) {
+      saveControllerRef.current.abort();
+    }
+
+    // Create new abort controller for this request
+    const controller = new AbortController();
+    saveControllerRef.current = controller;
+
+    // Increment sequence number to track request order
+    const currentSequence = ++saveSequenceRef.current;
+
     setSaving(true);
     try {
       // Merge updates with current recipe data to ensure all required fields are sent
@@ -87,13 +159,29 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
         ...updates // Override with new values
       };
 
-      const updatedRecipe = await RecipeAPI.updateRecipe(recipe.id, fullUpdate);
-      setRecipe(prev => ({ ...prev, ...updatedRecipe }));
+      const updatedRecipe = await RecipeAPI.updateRecipe(recipe.id, fullUpdate, controller.signal);
+
+      // Only update state if this is the latest request (not cancelled)
+      if (currentSequence === saveSequenceRef.current && !controller.signal.aborted) {
+        setRecipe(prev => ({ ...prev, ...updatedRecipe }));
+      }
     } catch (error) {
-      console.error('Failed to save recipe:', error);
-      throw error;
+      // Don't log or throw errors for cancelled requests
+      if (error instanceof Error && error.name === 'AbortError') {
+        return; // Request was cancelled, this is expected
+      }
+
+      // Only handle real errors if this is still the latest request
+      if (currentSequence === saveSequenceRef.current) {
+        console.error('Failed to save recipe:', error);
+        throw error;
+      }
     } finally {
-      setSaving(false);
+      // Only update loading state if this is still the latest request
+      if (currentSequence === saveSequenceRef.current) {
+        setSaving(false);
+        saveControllerRef.current = null;
+      }
     }
   };
 
@@ -120,14 +208,19 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
     }
   };
 
-  // Cleanup timeout on unmount
+  // Cleanup timeout and cancel pending requests on unmount
   useEffect(() => {
     return () => {
-      if (saveTimeout) {
-        clearTimeout(saveTimeout);
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+      if (saveControllerRef.current) {
+        saveControllerRef.current.abort();
+        saveControllerRef.current = null;
       }
     };
-  }, [saveTimeout]);
+  }, []); // Empty dependency array since we use useRef
 
   const getSaveStatusDisplay = () => {
     switch (saveStatus) {
