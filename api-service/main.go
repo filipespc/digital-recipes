@@ -283,6 +283,10 @@ func main() {
 		ingredientGroup := protected.Group("/ingredients")
 		{
 			ingredientGroup.POST("", recipeHandler.CreateCanonicalIngredient)
+			ingredientGroup.GET("/manage", recipeHandler.GetIngredientManagement)
+			ingredientGroup.PUT("/:id/merge", recipeHandler.MergeCanonicalIngredients)
+			ingredientGroup.PUT("/:id", recipeHandler.UpdateCanonicalIngredient)
+			ingredientGroup.DELETE("/:id", recipeHandler.DeleteCanonicalIngredient)
 		}
 	}
 

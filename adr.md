@@ -116,8 +116,26 @@ Communication between the frontend and backend will be handled via a stateless *
     * **Purpose**: To save the user's edits from the "Review & Edit" screen.
     * **Action**: Updates the recipe and its ingredients and sets the `status` to `'published'`.
 * `GET /v1/ingredients/search?q={query}`:
-    * **Purpose**: To power the UI feature that allows users to re-link an ingredient to a different canonical ingredient.
-    * **Response**: A list of matching canonical ingredients.
+    * **Purpose**: To power the UI feature that allows users to search and link ingredients to existing ones in their collection.
+    * **Response**: A list of matching ingredients from the user's existing ingredient collection.
+* `PUT /v1/recipes/{recipe_id}/ingredients/{ingredient_id}/link`:
+    * **Purpose**: To link an ingredient to an existing ingredient in the user's collection.
+    * **Action**: Creates the connection between recipe ingredient and existing ingredient.
+* `POST /v1/ingredients`:
+    * **Purpose**: To create a new canonical ingredient in the user's collection.
+    * **Action**: Creates new canonical ingredient with user_id scope.
+* `GET /v1/ingredients/manage`:
+    * **Purpose**: To retrieve all user's canonical ingredients with usage statistics.
+    * **Response**: List of canonical ingredients with recipe usage counts.
+* `PUT /v1/ingredients/{ingredient_id}/merge`:
+    * **Purpose**: To merge two canonical ingredients into one.
+    * **Action**: Updates all recipe links to target ingredient, deletes source ingredient.
+* `PUT /v1/ingredients/{ingredient_id}`:
+    * **Purpose**: To rename a canonical ingredient.
+    * **Action**: Updates the ingredient name across all linked recipes.
+* `DELETE /v1/ingredients/{ingredient_id}`:
+    * **Purpose**: To delete an unused canonical ingredient.
+    * **Action**: Removes canonical ingredient if not used in any recipes.
 
 ---
 
@@ -157,19 +175,56 @@ erDiagram
         int id PK
         string name "e.g., 'Egg', 'All-Purpose Flour'"
         boolean is_approved "For AI suggestions"
+        int user_id FK "Scoped to user's ingredient collection"
     }
 
     RECIPE_INGREDIENTS {
         int id PK
         int recipe_id FK
-        int canonical_ingredient_id FK "Can be NULL if unlinked"
+        int canonical_ingredient_id FK "NULL = 'New Ingredient', NOT NULL = 'Linked to Existing'"
         string original_text "e.g., '2 large eggs, beaten'"
         float quantity
         string unit
     }
 
     USERS ||--o{ RECIPES : "has"
+    USERS ||--o{ CANONICAL_INGREDIENTS : "owns ingredient collection"
     RECIPES ||--|{ RECIPE_INGREDIENTS : "contains"
     CANONICAL_INGREDIENTS ||--o{ RECIPE_INGREDIENTS : "is used in"
 }
 ```
+
+### 6.4. Ingredient Management Philosophy
+
+* **User-Centered Design**: The ingredient system is designed around a mandatory resolution workflow: "Before publishing, all ingredients must be linked to canonical ingredients."
+
+* **Review-to-Publish Workflow**: Recipe ingredients follow a strict lifecycle:
+    * **During Review**: `canonical_ingredient_id` can be NULL (unresolved)
+    * **Before Publishing**: ALL ingredients must have `canonical_ingredient_id` set
+    * **After Publishing**: No NULL values allowed - ensures data consistency
+
+* **Application-Level Validation**: Since PostgreSQL doesn't allow subqueries in CHECK constraints, the constraint is enforced at the application level:
+    - Recipe publishing endpoints validate that all ingredients have `canonical_ingredient_id` set
+    - Frontend prevents publishing until all ingredients are resolved
+    - Database integrity maintained through application logic
+
+* **User-Scoped Collections**: Each user has their own ingredient collection (`CANONICAL_INGREDIENTS.user_id`). This ensures:
+    * Users only see ingredients from their own recipes when searching to link
+    * No cross-user data contamination
+    * Each user builds their personal ingredient vocabulary over time
+
+* **AI Assistance**: The system attempts to automatically link ingredients when recipes are processed:
+    * **Auto-Link**: AI links ingredients to existing canonical ingredients where confidence is high
+    * **User Resolution**: Users must resolve unlinked ingredients before publishing
+    * **Create New**: Users can create new canonical ingredients during resolution
+
+* **Ingredient Management**: Users can maintain their ingredient collection over time:
+    * **Merge Duplicates**: Combine duplicate canonical ingredients and update all recipe links
+    * **Delete Unused**: Remove canonical ingredients not used in any recipes
+    * **Rename**: Update canonical ingredient names across all linked recipes
+
+* **Data Quality Benefits**: This approach ensures:
+    * All published recipes have fully linked ingredients
+    * Shopping lists and analytics features work reliably
+    * Long-term data consistency and quality
+    * User control over their ingredient vocabulary

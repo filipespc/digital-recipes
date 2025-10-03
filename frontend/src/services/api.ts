@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Recipe, RecipeWithIngredients, RecipeListResponse, StandardResponse } from '@/types/recipe';
+import { Recipe, RecipeWithIngredients, RecipeListResponse, StandardResponse, RecipeIngredient, CanonicalIngredient, PantryItem, PantryItemManagement, IngredientManagement } from '@/types/recipe';
 import { UPLOAD_CONFIG } from '@/constants/upload';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
@@ -52,7 +52,7 @@ export class RecipeAPI {
     return response.data.data;
   }
 
-  static async updateRecipe(id: number, recipe: Partial<Recipe>, signal?: AbortSignal): Promise<Recipe> {
+  static async updateRecipe(id: number, recipe: Partial<Recipe>): Promise<Recipe> {
     // Transform the recipe data to match backend expectations
     const updateData: any = {};
 
@@ -71,9 +71,7 @@ export class RecipeAPI {
       updateData.tips = recipe.tips ? recipe.tips.split('\n').filter(line => line.trim()) : [];
     }
 
-    const response = await apiClient.put<StandardResponse<Recipe>>(`/recipes/${id}`, updateData, {
-      signal // Pass the abort signal to axios
-    });
+    const response = await apiClient.put<StandardResponse<Recipe>>(`/recipes/${id}`, updateData);
     return response.data.data;
   }
 
@@ -157,6 +155,180 @@ export class RecipeAPI {
       
       xhr.send(file);
     });
+  }
+
+  // Ingredient Management API Methods
+
+  static async addIngredient(recipeId: number, ingredient: {
+    original_text: string;
+    quantity?: number;
+    unit?: string;
+  }): Promise<RecipeIngredient> {
+    const response = await apiClient.post<StandardResponse<RecipeIngredient>>(
+      `/recipes/${recipeId}/ingredients`,
+      ingredient
+    );
+    return response.data.data;
+  }
+
+  static async updateIngredient(
+    recipeId: number,
+    ingredientId: number,
+    ingredient: {
+      original_text?: string;
+      quantity?: number;
+      unit?: string;
+    }
+  ): Promise<RecipeIngredient> {
+    const response = await apiClient.put<StandardResponse<RecipeIngredient>>(
+      `/recipes/${recipeId}/ingredients/${ingredientId}`,
+      ingredient
+    );
+    return response.data.data;
+  }
+
+  static async deleteIngredient(recipeId: number, ingredientId: number): Promise<void> {
+    await apiClient.delete(`/recipes/${recipeId}/ingredients/${ingredientId}`);
+  }
+
+  // Primary Pantry Item API Methods
+  static async searchPantryItems(query: string, userId: number): Promise<PantryItem[]> {
+    // For now, use the existing endpoint but will be updated to new endpoint later
+    const response = await apiClient.get<StandardResponse<CanonicalIngredient[]>>(
+      `/ingredients/search?q=${encodeURIComponent(query)}&user_id=${userId}`
+    );
+    return response.data.data;
+  }
+
+  // Keep for backward compatibility during transition
+  static async searchCanonicalIngredients(query: string, userId: number): Promise<CanonicalIngredient[]> {
+    const response = await apiClient.get<StandardResponse<CanonicalIngredient[]>>(
+      `/ingredients/search?q=${encodeURIComponent(query)}&user_id=${userId}`
+    );
+    return response.data.data;
+  }
+
+  // Primary Pantry Item API Methods
+  static async linkIngredientToPantryItem(
+    recipeId: number,
+    ingredientId: number,
+    pantryItemId: number
+  ): Promise<RecipeIngredient> {
+    // For now, use the existing endpoint
+    const response = await apiClient.put<StandardResponse<RecipeIngredient>>(
+      `/recipes/${recipeId}/ingredients/${ingredientId}/link`,
+      { canonical_ingredient_id: pantryItemId }
+    );
+    return response.data.data;
+  }
+
+  static async createPantryItem(name: string, userId: number): Promise<PantryItem> {
+    // For now, use the existing endpoint
+    const response = await apiClient.post<StandardResponse<CanonicalIngredient>>(
+      '/ingredients',
+      { name, user_id: userId }
+    );
+    return response.data.data;
+  }
+
+  // Keep for backward compatibility during transition
+  static async linkIngredientToCanonical(
+    recipeId: number,
+    ingredientId: number,
+    canonicalIngredientId: number
+  ): Promise<RecipeIngredient> {
+    const response = await apiClient.put<StandardResponse<RecipeIngredient>>(
+      `/recipes/${recipeId}/ingredients/${ingredientId}/link`,
+      { canonical_ingredient_id: canonicalIngredientId }
+    );
+    return response.data.data;
+  }
+
+  static async createCanonicalIngredient(name: string, userId: number): Promise<CanonicalIngredient> {
+    const response = await apiClient.post<StandardResponse<CanonicalIngredient>>(
+      '/ingredients',
+      { name, user_id: userId }
+    );
+    return response.data.data;
+  }
+
+  // Pantry Item Management API Methods
+
+  static async getPantryItemManagement(userId: number): Promise<PantryItemManagement[]> {
+    const response = await apiClient.get<StandardResponse<PantryItemManagement[]>>(
+      `/ingredients/manage?user_id=${userId}`
+    );
+    return response.data.data;
+  }
+
+  static async mergePantryItems(
+    targetId: number,
+    sourceId: number,
+    userId: number
+  ): Promise<{ message: string; target_id: number; target_name: string; source_name: string }> {
+    const response = await apiClient.put<StandardResponse<any>>(
+      `/ingredients/${targetId}/merge`,
+      { source_ingredient_id: sourceId, user_id: userId }
+    );
+    return response.data.data;
+  }
+
+  static async updatePantryItem(
+    pantryItemId: number,
+    name: string,
+    userId: number
+  ): Promise<{ message: string; id: number; old_name: string; new_name: string }> {
+    const response = await apiClient.put<StandardResponse<any>>(
+      `/ingredients/${pantryItemId}`,
+      { name, user_id: userId }
+    );
+    return response.data.data;
+  }
+
+  static async deletePantryItem(pantryItemId: number, userId: number): Promise<{ message: string; id: number; name: string }> {
+    const response = await apiClient.delete<StandardResponse<any>>(
+      `/ingredients/${pantryItemId}?user_id=${userId}`
+    );
+    return response.data.data;
+  }
+
+  // Keep for backward compatibility during transition
+  static async getIngredientManagement(userId: number): Promise<IngredientManagement[]> {
+    const response = await apiClient.get<StandardResponse<IngredientManagement[]>>(
+      `/ingredients/manage?user_id=${userId}`
+    );
+    return response.data.data;
+  }
+
+  static async mergeCanonicalIngredients(
+    targetId: number,
+    sourceId: number,
+    userId: number
+  ): Promise<{ message: string; target_id: number; target_name: string; source_name: string }> {
+    const response = await apiClient.put<StandardResponse<any>>(
+      `/ingredients/${targetId}/merge`,
+      { source_ingredient_id: sourceId, user_id: userId }
+    );
+    return response.data.data;
+  }
+
+  static async updateCanonicalIngredient(
+    ingredientId: number,
+    name: string,
+    userId: number
+  ): Promise<{ message: string; id: number; old_name: string; new_name: string }> {
+    const response = await apiClient.put<StandardResponse<any>>(
+      `/ingredients/${ingredientId}`,
+      { name, user_id: userId }
+    );
+    return response.data.data;
+  }
+
+  static async deleteCanonicalIngredient(ingredientId: number, userId: number): Promise<{ message: string; id: number; name: string }> {
+    const response = await apiClient.delete<StandardResponse<any>>(
+      `/ingredients/${ingredientId}?user_id=${userId}`
+    );
+    return response.data.data;
   }
 }
 

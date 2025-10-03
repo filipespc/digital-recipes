@@ -61,23 +61,35 @@ The following features are valuable but will be considered for future versions:
 
 * **User Story:** "As a cook, after the AI has processed my recipe, I want to review its output and easily correct any mistakes across all fields, so my saved recipe is perfectly organized with minimal effort."
 * **Core Workflow (Ingredients):**
-    1.  **AI Extraction & Linking:** The AI extracts ingredient strings and automatically links them to a canonical ingredient in the master list (e.g., "2 large eggs" -> `Canonical: Egg`).
-    2.  **AI Suggestion:** If an ingredient is unrecognized (e.g., "za'atar"), the AI flags it as a `Suggested New Ingredient`.
-    3.  **User Review UI:** The user is presented with a list of ingredients in different states: `Confirmed Link`, `Suggested New`, and allows for `User Override`.
-    * The override mechanism must allow the user to:
-        * Re-link to a different existing canonical ingredient.
-        * Create a new canonical ingredient from the current string (e.g., force "bread flour" to be a new ingredient instead of linking to "Flour").
+    1.  **AI Extraction & Smart Linking:** The AI extracts ingredient strings and automatically attempts to link them to existing ingredients in the user's collection (e.g., "2 large eggs" -> links to existing "Egg" if found).
+    2.  **Mandatory Ingredient Resolution:** For each unlinked ingredient, users must make a decision before publishing:
+        * **Link to Existing:** Search and select from their existing ingredient collection
+        * **Create New:** Confirm creating a new ingredient in their collection
+    3.  **Publishing Requirement:** Recipes cannot be published until ALL ingredients are resolved (linked to canonical ingredients)
+* **User Interaction Model:**
+    * **Default State:** AI attempts to link ingredients automatically. Successfully linked ingredients show as "Linked to [Ingredient Name]"
+    * **Ingredient Resolution Process:**
+        * **Linked Ingredients:** User can confirm the link is correct OR change to link to a different ingredient
+        * **Unlinked Ingredients:** User must resolve by either linking to existing ingredient OR creating new one
+        * **Search & Link:** Users can search through their ingredient collection to find matches
+        * **Create New:** Users can create new canonical ingredients when no match exists
+    * **Publishing Validation:** Save button is disabled until all ingredients are resolved
 * **Acceptance Criteria:**
     * `GIVEN` I am on the "Review & Edit" screen.
     * `THEN` I see fields for `Title`, `Servings`, `Ingredients`, `Instructions`, and `Tips & Observations` populated by the AI **and presented in editable input controls**.
     * `WHEN` I modify the text in the `Title`, `Servings`, `Instructions`, or `Tips & Observations` fields.
     * `THEN` my changes are reflected in the input fields, ready to be saved.
-    * `AND` the system automatically links most ingredients to their canonical form.
-    * `AND` ingredients the AI identifies as new are clearly highlighted as suggestions.
-    * `WHEN` I see a suggested new ingredient, I can confirm its creation with a single click.
-    * `WHEN` I spot an incorrect ingredient link, I can easily click on it and choose to create a new canonical ingredient or re-link to an existing one from an override menu.
-    * `WHEN` I am satisfied with all my edits and tap "Save".
-    * `THEN` all changes to all fields are saved to the database.
+    * `AND` each ingredient shows its current state: either "Linked to [Ingredient Name]" or "Needs Resolution"
+    * `WHEN` I see an ingredient marked as "Linked to [Ingredient Name]".
+    * `THEN` I can confirm the link is correct OR click to change the link to a different ingredient OR mark it as a new ingredient if the linked ingredient doesn't actually exist in my collection yet
+    * `WHEN` I see an ingredient marked as "Needs Resolution".
+    * `THEN` I can search to link it to an existing ingredient OR create a new ingredient
+    * `WHEN` I choose to link an ingredient.
+    * `THEN` I can search through my existing ingredients and select one to link to
+    * `WHEN` some ingredients still need resolution.
+    * `THEN` the "Publish Recipe" button is disabled with a message indicating unresolved ingredients
+    * `WHEN` all ingredients are resolved and I tap "Publish Recipe".
+    * `THEN` all changes are saved and the recipe status is set to 'published' with all ingredients properly linked.
 
 ### 4.3. View Recipe List & Details
 
@@ -88,3 +100,22 @@ The following features are valuable but will be considered for future versions:
     * `WHEN` I tap on a recipe title.
     * `THEN` I am navigated to the Recipe Detail screen.
     * `AND` the Detail screen cleanly displays the `Title`, `Servings`, `Ingredients`, `Instructions`, and `Tips & Observations`.
+
+### 4.4. Manage Ingredients
+
+* **User Story:** "As a cook who has used the app for a while, I want to manage my ingredient collection to fix mistakes and keep my data organized, so my recipes stay consistent and useful."
+* **Core Features:**
+    1. **View Ingredient Collection:** See all canonical ingredients in my collection with usage statistics
+    2. **Merge Duplicate Ingredients:** Combine ingredients that represent the same thing (e.g., "Flour" + "All-Purpose Flour")
+    3. **Delete Unused Ingredients:** Remove ingredients that aren't used in any recipes
+    4. **Rename Ingredients:** Fix typos or improve naming consistency
+* **Acceptance Criteria:**
+    * `GIVEN` I am on the Ingredient Management screen.
+    * `THEN` I see a list of all my canonical ingredients with usage counts (e.g., "Eggs - used in 5 recipes").
+    * `WHEN` I identify duplicate ingredients.
+    * `THEN` I can select two ingredients and merge them, with all recipe links updating to the primary ingredient.
+    * `WHEN` I see an ingredient with 0 recipe usage.
+    * `THEN` I can delete it from my collection.
+    * `WHEN` I want to fix a typo in an ingredient name.
+    * `THEN` I can edit the name and it updates across all linked recipes.
+    * `AND` all changes maintain data integrity and recipe consistency.

@@ -42,6 +42,16 @@ class QueueStatsResponse(BaseModel):
     queue_stats: Dict[str, int]
     services: Dict[str, str]
 
+class PantryNameSuggestionRequest(BaseModel):
+    ingredient_text: str
+    existing_pantry_items: List[str] = []
+
+class PantryNameSuggestionResponse(BaseModel):
+    suggested_name: str
+    confidence: float
+    reasoning: str
+    original_text: str
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     return HealthResponse(
@@ -101,6 +111,30 @@ async def get_stats():
         )
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/suggest-pantry-name", response_model=PantryNameSuggestionResponse)
+async def suggest_pantry_name(request: PantryNameSuggestionRequest):
+    """Suggest a clean pantry item name for an ingredient"""
+    try:
+        # Use the LLM service directly for name suggestions
+        from services.llm_service import LLMService
+        llm_service = LLMService()
+
+        suggestion = await llm_service.suggest_pantry_item_name(
+            request.ingredient_text,
+            request.existing_pantry_items if request.existing_pantry_items else None
+        )
+
+        return PantryNameSuggestionResponse(
+            suggested_name=suggestion["suggested_name"],
+            confidence=suggestion["confidence"],
+            reasoning=suggestion["reasoning"],
+            original_text=suggestion["original_text"]
+        )
+
+    except Exception as e:
+        logger.error(f"Error suggesting pantry name for '{request.ingredient_text}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.on_event("startup")

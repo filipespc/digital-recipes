@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Recipe, RecipeWithIngredients } from '@/types/recipe';
+import { Recipe, RecipeWithIngredients, RecipeIngredient } from '@/types/recipe';
 import { RecipeAPI } from '@/services/api';
+import IngredientList from './IngredientList';
 
 interface RecipeEditFormProps {
   recipe: RecipeWithIngredients;
@@ -10,6 +11,7 @@ interface RecipeEditFormProps {
 
 export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditFormProps) {
   const [recipe, setRecipe] = useState<RecipeWithIngredients>(initialRecipe);
+  const [ingredients, setIngredients] = useState<RecipeIngredient[]>(initialRecipe.ingredients || []);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -20,6 +22,17 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
   // Request cancellation to prevent race conditions
   const saveControllerRef = useRef<AbortController | null>(null);
   const saveSequenceRef = useRef(0);
+
+  // Update ingredients when recipe changes (e.g., from refetch)
+  useEffect(() => {
+    setIngredients(initialRecipe.ingredients || []);
+  }, [initialRecipe.ingredients]);
+
+  const handleIngredientsChange = useCallback((newIngredients: RecipeIngredient[]) => {
+    setIngredients(newIngredients);
+    // Update the recipe state to include the new ingredients
+    setRecipe(prev => ({ ...prev, ingredients: newIngredients }));
+  }, []);
 
   const validateField = (name: string, value: string): string | null => {
     // Basic sanitization
@@ -159,7 +172,7 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
         ...updates // Override with new values
       };
 
-      const updatedRecipe = await RecipeAPI.updateRecipe(recipe.id, fullUpdate, controller.signal);
+      const updatedRecipe = await RecipeAPI.updateRecipe(recipe.id, fullUpdate);
 
       // Only update state if this is the latest request (not cancelled)
       if (currentSequence === saveSequenceRef.current && !controller.signal.aborted) {
@@ -185,11 +198,28 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
     }
   };
 
+  // Check if all ingredients are resolved (linked to pantry items)
+  const getUnresolvedIngredients = useCallback(() => {
+    return ingredients.filter(ingredient => !ingredient.canonical_ingredient_id && !ingredient.pantry_item_id);
+  }, [ingredients]);
+
+  const unresolvedIngredients = getUnresolvedIngredients();
+  const hasUnresolvedIngredients = unresolvedIngredients.length > 0;
+
   const handlePublish = async () => {
     // Validate all required fields
     const titleError = validateField('title', recipe.title);
     if (titleError) {
       setErrors(prev => ({ ...prev, title: titleError }));
+      return;
+    }
+
+    // Validate that all ingredients are resolved
+    if (hasUnresolvedIngredients) {
+      setErrors(prev => ({
+        ...prev,
+        ingredients: `Please resolve ${unresolvedIngredients.length} ingredient(s) before publishing. All ingredients must be linked to your ingredient collection.`
+      }));
       return;
     }
 
@@ -199,6 +229,11 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
       setRecipe(prev => ({ ...prev, status: 'published' }));
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2000);
+      // Clear any ingredient errors on successful publish
+      setErrors(prev => {
+        const { ingredients, ...rest } = prev;
+        return rest;
+      });
     } catch (error) {
       console.error('Failed to publish recipe:', error);
       setSaveStatus('error');
@@ -356,6 +391,15 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
         )}
       </div>
 
+      {/* Ingredients Management */}
+      <div className="border-t border-gray-200 pt-6">
+        <IngredientList
+          recipeId={recipe.id}
+          ingredients={ingredients}
+          onIngredientsChange={handleIngredientsChange}
+        />
+      </div>
+
       {/* Action Buttons */}
       <div className="flex items-center justify-between pt-6 border-t border-gray-200">
         <div className="text-sm text-gray-600">
@@ -371,17 +415,49 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
           )}
         </div>
 
-        <div className="flex space-x-4">
+        <div className="flex flex-col space-y-3">
+          {/* Ingredient resolution status */}
           {recipe.status === 'review_required' && (
-            <button
-              type="button"
-              onClick={handlePublish}
-              disabled={saving || !!errors.title}
-              className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {saving ? 'Publishing...' : 'Publish Recipe'}
-            </button>
+            <div className="text-sm">
+              {hasUnresolvedIngredients ? (
+                <div className="flex items-center space-x-2 text-yellow-700 bg-yellow-50 px-3 py-2 rounded-md">
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.268 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                  </svg>
+                  <span>
+                    {unresolvedIngredients.length} ingredient(s) need resolution before publishing
+                  </span>
+                </div>
+              ) : ingredients.length > 0 ? (
+                <div className="flex items-center space-x-2 text-green-700 bg-green-50 px-3 py-2 rounded-md">
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span>All ingredients resolved - ready to publish!</span>
+                </div>
+              ) : null}
+            </div>
           )}
+
+          {/* Error message for ingredients */}
+          {errors.ingredients && (
+            <div className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-md">
+              {errors.ingredients}
+            </div>
+          )}
+
+          <div className="flex space-x-4">
+            {recipe.status === 'review_required' && (
+              <button
+                type="button"
+                onClick={handlePublish}
+                disabled={saving || !!errors.title || hasUnresolvedIngredients}
+                className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? 'Publishing...' : 'Publish Recipe'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </form>

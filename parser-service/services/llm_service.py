@@ -200,3 +200,118 @@ Return JSON format:
                 "name": ingredient_text,
                 "notes": None
             }
+
+    async def suggest_pantry_item_name(self, ingredient_text: str, existing_pantry_items: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Suggest clean pantry item names for recipe ingredients
+
+        Args:
+            ingredient_text: Raw ingredient text from recipe
+            existing_pantry_items: List of existing user pantry items for context
+
+        Returns:
+            Dict with suggested name, confidence score, and reasoning
+        """
+        try:
+            prompt = self._create_pantry_name_suggestion_prompt(ingredient_text, existing_pantry_items)
+
+            response = self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=300,
+                    temperature=0.1,
+                )
+            )
+
+            if not response.text:
+                raise ValueError("Empty response for pantry name suggestion")
+
+            # Parse and validate the JSON response
+            suggestion_data = json.loads(response.text.strip())
+
+            # Validate required fields
+            if not isinstance(suggestion_data.get('suggested_name'), str):
+                raise ValueError("Invalid suggested_name in response")
+
+            if not isinstance(suggestion_data.get('confidence'), (int, float)):
+                raise ValueError("Invalid confidence score in response")
+
+            # Ensure confidence is within valid range
+            confidence = max(0, min(100, suggestion_data['confidence']))
+
+            return {
+                "suggested_name": suggestion_data['suggested_name'].strip(),
+                "confidence": confidence,
+                "reasoning": suggestion_data.get('reasoning', ''),
+                "original_text": ingredient_text
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to suggest pantry item name for '{ingredient_text}': {e}")
+            # Return fallback suggestion
+            return {
+                "suggested_name": self._extract_fallback_pantry_name(ingredient_text),
+                "confidence": 30,
+                "reasoning": "Fallback extraction due to LLM error",
+                "original_text": ingredient_text
+            }
+
+    def _create_pantry_name_suggestion_prompt(self, ingredient_text: str, existing_items: Optional[List[str]]) -> str:
+        """Create prompt for suggesting clean pantry item names"""
+        existing_items_text = ""
+        if existing_items:
+            existing_items_text = f"\n\nEXISTING PANTRY ITEMS (use exact match if applicable):\n{', '.join(existing_items[:20])}"  # Limit to 20 items to avoid token overflow
+
+        return f"""You are a culinary expert helping to normalize ingredient names for a pantry system.
+
+TASK: Suggest a clean, standardized pantry item name for this ingredient text.
+
+INGREDIENT TEXT: "{ingredient_text}"{existing_items_text}
+
+INSTRUCTIONS:
+1. Extract the core ingredient, removing quantities, preparations, and modifiers
+2. Use singular form (e.g., "tomato" not "tomatoes")
+3. Use common/generic terms (e.g., "flour" not "all-purpose flour", "rice" not "basmati rice")
+4. Remove cooking preparations (e.g., "chopped", "diced", "sliced")
+5. Remove size descriptions (e.g., "large", "small", "medium")
+6. If the ingredient closely matches an existing pantry item, use that exact name
+7. For complex ingredients, choose the primary component (e.g., "chicken" from "boneless chicken breast")
+8. Provide a confidence score (0-100) for the suggestion
+
+EXAMPLES:
+- "2 large tomatoes, diced" → "tomato"
+- "1 cup all-purpose flour" → "flour"
+- "3 medium carrots, sliced" → "carrot"
+- "1 lb boneless chicken breast" → "chicken breast"
+- "2 tbsp olive oil" → "olive oil"
+
+Return JSON format:
+{{
+    "suggested_name": "string",
+    "confidence": number,
+    "reasoning": "string"
+}}"""
+
+    def _extract_fallback_pantry_name(self, ingredient_text: str) -> str:
+        """Simple fallback extraction logic when LLM fails"""
+        import re
+
+        # Remove quantities and common units
+        name = re.sub(r'^\d+(\.\d+)?\s*', '', ingredient_text)  # Remove leading numbers
+        name = re.sub(r'^\d+/\d+\s*', '', name)  # Remove fractions
+        name = re.sub(r'\b(cups?|tbsp|tsp|oz|lbs?|grams?|kg|ml|liters?|g|l)\b', ' ', name, flags=re.IGNORECASE)
+
+        # Remove common descriptors
+        name = re.sub(r'\b(large|small|medium|fresh|dried|chopped|diced|sliced|minced)\b', ' ', name, flags=re.IGNORECASE)
+
+        # Clean up spaces and punctuation
+        name = re.sub(r'[,\.]$', '', name)  # Remove trailing punctuation
+        name = re.sub(r'\s+', ' ', name)  # Normalize spaces
+        name = name.strip()
+
+        # If result is empty, return original text
+        if not name:
+            name = ingredient_text
+
+        # Capitalize first letter
+        return name.lower().strip()
