@@ -26,15 +26,15 @@ type RecipeWithIngredients struct {
 
 // RecipeIngredient represents an ingredient in a recipe
 type RecipeIngredient struct {
-	ID                     int      `json:"id" db:"id"`
-	RecipeID               int      `json:"recipe_id" db:"recipe_id"`
-	CanonicalIngredientID  *int     `json:"canonical_ingredient_id,omitempty" db:"canonical_ingredient_id"`
-	OriginalText           string   `json:"original_text" db:"original_text"`
-	Quantity               *float64 `json:"quantity,omitempty" db:"quantity"`
-	Unit                   *string  `json:"unit,omitempty" db:"unit"`
-	CanonicalName          *string  `json:"canonical_name,omitempty" db:"canonical_name"`
-	CreatedAt              time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at" db:"updated_at"`
+	ID             int       `json:"id" db:"id"`
+	RecipeID       int       `json:"recipe_id" db:"recipe_id"`
+	PantryItemID   *int      `json:"pantry_item_id,omitempty" db:"pantry_item_id"`
+	OriginalText   string    `json:"original_text" db:"original_text"`
+	Quantity       *float64  `json:"quantity,omitempty" db:"quantity"`
+	Unit           *string   `json:"unit,omitempty" db:"unit"`
+	PantryItemName *string   `json:"pantry_item_name,omitempty" db:"pantry_item_name"`
+	CreatedAt      time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // UploadRequest represents a request to upload recipe images
@@ -156,11 +156,3 @@ type ProcessedIngredient struct {
 	Notes    *string `json:"notes,omitempty"`
 }
 
-// CanonicalIngredient represents a canonical ingredient in the system
-type CanonicalIngredient struct {
-	ID         int       `json:"id" db:"id"`
-	Name       string    `json:"name" db:"name"`
-	IsApproved bool      `json:"is_approved" db:"is_approved"`
-	CreatedAt  time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at" db:"updated_at"`
-}

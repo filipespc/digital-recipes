@@ -193,19 +193,19 @@ export class RecipeAPI {
 
   // Primary Pantry Item API Methods
   static async searchPantryItems(query: string, userId: number): Promise<PantryItem[]> {
-    // For now, use the existing endpoint but will be updated to new endpoint later
-    const response = await apiClient.get<StandardResponse<CanonicalIngredient[]>>(
-      `/ingredients/search?q=${encodeURIComponent(query)}&user_id=${userId}`
+    const response = await apiClient.get<StandardResponse<PantryItem[]>>(
+      `/pantry/search?q=${encodeURIComponent(query)}&user_id=${userId}`
     );
     return response.data.data;
   }
 
   // Keep for backward compatibility during transition
   static async searchCanonicalIngredients(query: string, userId: number): Promise<CanonicalIngredient[]> {
-    const response = await apiClient.get<StandardResponse<CanonicalIngredient[]>>(
-      `/ingredients/search?q=${encodeURIComponent(query)}&user_id=${userId}`
+    // Redirect to pantry search
+    const response = await apiClient.get<StandardResponse<PantryItem[]>>(
+      `/pantry/search?q=${encodeURIComponent(query)}&user_id=${userId}`
     );
-    return response.data.data;
+    return response.data.data as any;
   }
 
   // Primary Pantry Item API Methods
@@ -214,18 +214,16 @@ export class RecipeAPI {
     ingredientId: number,
     pantryItemId: number
   ): Promise<RecipeIngredient> {
-    // For now, use the existing endpoint
     const response = await apiClient.put<StandardResponse<RecipeIngredient>>(
       `/recipes/${recipeId}/ingredients/${ingredientId}/link`,
-      { canonical_ingredient_id: pantryItemId }
+      { pantry_item_id: pantryItemId }
     );
     return response.data.data;
   }
 
   static async createPantryItem(name: string, userId: number): Promise<PantryItem> {
-    // For now, use the existing endpoint
-    const response = await apiClient.post<StandardResponse<CanonicalIngredient>>(
-      '/ingredients',
+    const response = await apiClient.post<StandardResponse<PantryItem>>(
+      '/pantry',
       { name, user_id: userId }
     );
     return response.data.data;
@@ -245,18 +243,19 @@ export class RecipeAPI {
   }
 
   static async createCanonicalIngredient(name: string, userId: number): Promise<CanonicalIngredient> {
-    const response = await apiClient.post<StandardResponse<CanonicalIngredient>>(
-      '/ingredients',
+    // Redirect to pantry
+    const response = await apiClient.post<StandardResponse<PantryItem>>(
+      '/pantry',
       { name, user_id: userId }
     );
-    return response.data.data;
+    return response.data.data as any;
   }
 
   // Pantry Item Management API Methods
 
   static async getPantryItemManagement(userId: number): Promise<PantryItemManagement[]> {
     const response = await apiClient.get<StandardResponse<PantryItemManagement[]>>(
-      `/ingredients/manage?user_id=${userId}`
+      `/pantry/manage?user_id=${userId}`
     );
     return response.data.data;
   }
@@ -267,8 +266,8 @@ export class RecipeAPI {
     userId: number
   ): Promise<{ message: string; target_id: number; target_name: string; source_name: string }> {
     const response = await apiClient.put<StandardResponse<any>>(
-      `/ingredients/${targetId}/merge`,
-      { source_ingredient_id: sourceId, user_id: userId }
+      `/pantry/${targetId}/merge`,
+      { source_pantry_item_id: sourceId, user_id: userId }
     );
     return response.data.data;
   }
@@ -279,7 +278,7 @@ export class RecipeAPI {
     userId: number
   ): Promise<{ message: string; id: number; old_name: string; new_name: string }> {
     const response = await apiClient.put<StandardResponse<any>>(
-      `/ingredients/${pantryItemId}`,
+      `/pantry/${pantryItemId}`,
       { name, user_id: userId }
     );
     return response.data.data;
@@ -287,17 +286,18 @@ export class RecipeAPI {
 
   static async deletePantryItem(pantryItemId: number, userId: number): Promise<{ message: string; id: number; name: string }> {
     const response = await apiClient.delete<StandardResponse<any>>(
-      `/ingredients/${pantryItemId}?user_id=${userId}`
+      `/pantry/${pantryItemId}?user_id=${userId}`
     );
     return response.data.data;
   }
 
   // Keep for backward compatibility during transition
   static async getIngredientManagement(userId: number): Promise<IngredientManagement[]> {
-    const response = await apiClient.get<StandardResponse<IngredientManagement[]>>(
-      `/ingredients/manage?user_id=${userId}`
+    // Redirect to pantry
+    const response = await apiClient.get<StandardResponse<PantryItemManagement[]>>(
+      `/pantry/manage?user_id=${userId}`
     );
-    return response.data.data;
+    return response.data.data as any;
   }
 
   static async mergeCanonicalIngredients(
@@ -305,9 +305,10 @@ export class RecipeAPI {
     sourceId: number,
     userId: number
   ): Promise<{ message: string; target_id: number; target_name: string; source_name: string }> {
+    // Redirect to pantry
     const response = await apiClient.put<StandardResponse<any>>(
-      `/ingredients/${targetId}/merge`,
-      { source_ingredient_id: sourceId, user_id: userId }
+      `/pantry/${targetId}/merge`,
+      { source_pantry_item_id: sourceId, user_id: userId }
     );
     return response.data.data;
   }
@@ -317,16 +318,18 @@ export class RecipeAPI {
     name: string,
     userId: number
   ): Promise<{ message: string; id: number; old_name: string; new_name: string }> {
+    // Redirect to pantry
     const response = await apiClient.put<StandardResponse<any>>(
-      `/ingredients/${ingredientId}`,
+      `/pantry/${ingredientId}`,
       { name, user_id: userId }
     );
     return response.data.data;
   }
 
   static async deleteCanonicalIngredient(ingredientId: number, userId: number): Promise<{ message: string; id: number; name: string }> {
+    // Redirect to pantry
     const response = await apiClient.delete<StandardResponse<any>>(
-      `/ingredients/${ingredientId}?user_id=${userId}`
+      `/pantry/${ingredientId}?user_id=${userId}`
     );
     return response.data.data;
   }

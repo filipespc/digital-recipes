@@ -242,7 +242,7 @@ func main() {
 	{
 		public.GET("/recipes", recipeHandler.GetRecipes)
 		public.GET("/recipes/:id", recipeHandler.GetRecipe)
-		public.GET("/ingredients/search", recipeHandler.SearchIngredients)
+		public.GET("/pantry/search", recipeHandler.SearchPantryItems)
 	}
 
 	// Internal service endpoints (authentication required)
@@ -275,18 +275,18 @@ func main() {
 			recipeUpdateGroup.PUT("/:id/ingredients/:ingredient_id", recipeHandler.UpdateIngredient)
 			recipeUpdateGroup.DELETE("/:id/ingredients/:ingredient_id", recipeHandler.DeleteIngredient)
 
-			// Canonical ingredient linking
-			recipeUpdateGroup.PUT("/:id/ingredients/:ingredient_id/link", recipeHandler.LinkIngredientToCanonical)
+			// Pantry item linking
+			recipeUpdateGroup.PUT("/:id/ingredients/:ingredient_id/link", recipeHandler.LinkIngredientToPantryItem)
 		}
 
-		// Canonical ingredient management
-		ingredientGroup := protected.Group("/ingredients")
+		// Pantry item management
+		pantryGroup := protected.Group("/pantry")
 		{
-			ingredientGroup.POST("", recipeHandler.CreateCanonicalIngredient)
-			ingredientGroup.GET("/manage", recipeHandler.GetIngredientManagement)
-			ingredientGroup.PUT("/:id/merge", recipeHandler.MergeCanonicalIngredients)
-			ingredientGroup.PUT("/:id", recipeHandler.UpdateCanonicalIngredient)
-			ingredientGroup.DELETE("/:id", recipeHandler.DeleteCanonicalIngredient)
+			pantryGroup.POST("", recipeHandler.CreatePantryItem)
+			pantryGroup.GET("/manage", recipeHandler.GetPantryManagement)
+			pantryGroup.PUT("/:id/merge", recipeHandler.MergePantryItems)
+			pantryGroup.PUT("/:id", recipeHandler.UpdatePantryItem)
+			pantryGroup.DELETE("/:id", recipeHandler.DeletePantryItem)
 		}
 	}
 

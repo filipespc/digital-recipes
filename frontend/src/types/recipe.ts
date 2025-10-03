@@ -14,19 +14,22 @@ export interface RecipeIngredient {
   id: number;
   recipe_id: number;
   pantry_item_id?: number;
-  canonical_ingredient_id?: number; // Keep for backward compatibility during transition
   original_text: string;
+  raw_text?: string; // Alias for original_text
   quantity?: number;
   unit?: string;
-  suggested_pantry_item_name?: string; // AI-suggested name for new pantry items
+  pantry_item_name?: string; // Name of linked pantry item
+  canonical_name?: string; // Alias for pantry_item_name (backward compatibility)
   created_at: string;
   updated_at: string;
 }
 
 export interface PantryItem {
   id: number;
+  user_id: number;
   name: string;
-  is_approved: boolean;
+  category?: string;
+  default_unit?: string;
   created_at: string;
   updated_at: string;
 }
@@ -42,8 +45,10 @@ export interface CanonicalIngredient {
 
 export interface PantryItemManagement {
   id: number;
+  user_id: number;
   name: string;
-  is_approved: boolean;
+  category?: string;
+  default_unit?: string;
   created_at: string;
   updated_at: string;
   usage_count: number;

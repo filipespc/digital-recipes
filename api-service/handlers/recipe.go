@@ -337,7 +337,7 @@ func (h *RecipeHandler) GetRecipe(c *gin.Context) {
 		
 		// Set pantry item name if available
 		if canonicalName.Valid {
-			ingredient.CanonicalName = &canonicalName.String
+			ingredient.PantryItemName = &canonicalName.String
 		}
 		
 		ingredients = append(ingredients, ingredient)
@@ -1303,7 +1303,7 @@ func (h *RecipeHandler) SearchPantryItems(c *gin.Context) {
 	// Search pantry items using fuzzy matching (ILIKE for PostgreSQL)
 	// This supports partial matches and is case-insensitive, scoped to user
 	searchQuery := `
-		SELECT id, name, is_approved, created_at, updated_at
+		SELECT id, user_id, name, category, default_unit, created_at, updated_at
 		FROM pantry_items
 		WHERE name ILIKE '%' || $1 || '%' AND user_id = $2
 		ORDER BY
@@ -1329,8 +1329,10 @@ func (h *RecipeHandler) SearchPantryItems(c *gin.Context) {
 		var pantryItem models.PantryItem
 		err := rows.Scan(
 			&pantryItem.ID,
+			&pantryItem.UserID,
 			&pantryItem.Name,
-			&pantryItem.IsApproved,
+			&pantryItem.Category,
+			&pantryItem.DefaultUnit,
 			&pantryItem.CreatedAt,
 			&pantryItem.UpdatedAt,
 		)
@@ -1579,7 +1581,7 @@ func (h *RecipeHandler) CreatePantryItem(c *gin.Context) {
 }
 
 // GetIngredientManagement handles GET /ingredients/manage requests
-func (h *RecipeHandler) GetIngredientManagement(c *gin.Context) {
+func (h *RecipeHandler) GetPantryManagement(c *gin.Context) {
 	logger := middleware.LogWithContext(c)
 
 	// Parse user_id parameter - required for user-scoped ingredients
