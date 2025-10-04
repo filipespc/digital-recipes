@@ -333,6 +333,29 @@ export class RecipeAPI {
     );
     return response.data.data;
   }
+
+  // AI-powered pantry name suggestions
+  static async suggestPantryItemName(
+    ingredientText: string,
+    existingPantryItems?: string[]
+  ): Promise<{
+    suggested_name: string;
+    confidence: number;
+    reasoning: string;
+    original_text: string;
+  }> {
+    const response = await apiClient.post<StandardResponse<{
+      suggested_name: string;
+      confidence: number;
+      reasoning: string;
+      original_text: string;
+    }>>('/pantry/suggest-name', {
+      ingredient_text: ingredientText,
+      existing_pantry_items: existingPantryItems || []
+    });
+
+    return response.data.data;
+  }
 }
 
 export default apiClient;

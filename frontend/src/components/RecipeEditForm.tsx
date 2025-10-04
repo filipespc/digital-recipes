@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Recipe, RecipeWithIngredients, RecipeIngredient } from '@/types/recipe';
 import { RecipeAPI } from '@/services/api';
 import IngredientList from './IngredientList';
@@ -10,6 +11,7 @@ interface RecipeEditFormProps {
 }
 
 export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditFormProps) {
+  const router = useRouter();
   const [recipe, setRecipe] = useState<RecipeWithIngredients>(initialRecipe);
   const [ingredients, setIngredients] = useState<RecipeIngredient[]>(initialRecipe.ingredients || []);
   const [saving, setSaving] = useState(false);
@@ -214,26 +216,72 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
       return;
     }
 
-    // Validate that all ingredients are resolved
-    if (hasUnresolvedIngredients) {
-      setErrors(prev => ({
-        ...prev,
-        ingredients: `Please resolve ${unresolvedIngredients.length} ingredient(s) before publishing. All ingredients must be linked to your ingredient collection.`
-      }));
-      return;
-    }
-
     try {
       setSaving(true);
+
+      // Auto-create pantry items for unresolved ingredients
+      if (hasUnresolvedIngredients && ingredients) {
+        const creationPromises = [];
+
+        for (const ingredient of ingredients) {
+          if (!ingredient.pantry_item_id) {
+            // Get AI suggestion for pantry item name
+            const suggestionPromise = RecipeAPI.suggestPantryItemName(ingredient.original_text)
+              .then(suggestion => ({
+                ingredient,
+                suggestedName: suggestion.suggested_name
+              }))
+              .catch(() => ({
+                ingredient,
+                suggestedName: ingredient.original_text // Fallback to original text
+              }));
+
+            creationPromises.push(suggestionPromise);
+          }
+        }
+
+        // Process all suggestions and create pantry items
+        const suggestionsToCreate = await Promise.all(creationPromises);
+
+        for (const { ingredient, suggestedName } of suggestionsToCreate) {
+          try {
+            // Create the pantry item
+            const pantryItem = await RecipeAPI.createPantryItem(suggestedName, 1); // Using userId 1 for now
+
+            // Link it to the ingredient
+            await RecipeAPI.linkIngredientToPantryItem(
+              recipe.id,
+              ingredient.id,
+              pantryItem.id
+            );
+
+            // Update local state
+            setIngredients(prev => prev?.map(ing =>
+              ing.id === ingredient.id
+                ? { ...ing, pantry_item_id: pantryItem.id, pantry_item_name: pantryItem.name }
+                : ing
+            ) || []);
+          } catch (err) {
+            console.error(`Failed to create pantry item for "${suggestedName}":`, err);
+          }
+        }
+      }
+
+      // Now publish the recipe
       await RecipeAPI.updateRecipeStatus(recipe.id, 'published');
       setRecipe(prev => ({ ...prev, status: 'published' }));
       setSaveStatus('saved');
-      setTimeout(() => setSaveStatus('idle'), 2000);
+
       // Clear any ingredient errors on successful publish
       setErrors(prev => {
         const { ingredients, ...rest } = prev;
         return rest;
       });
+
+      // Redirect to recipe view page after successful publish
+      setTimeout(() => {
+        router.push(`/recipes/${recipe.id}`);
+      }, 500); // Small delay to show success state
     } catch (error) {
       console.error('Failed to publish recipe:', error);
       setSaveStatus('error');
@@ -420,12 +468,12 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
           {recipe.status === 'review_required' && (
             <div className="text-sm">
               {hasUnresolvedIngredients ? (
-                <div className="flex items-center space-x-2 text-yellow-700 bg-yellow-50 px-3 py-2 rounded-md">
+                <div className="flex items-center space-x-2 text-blue-700 bg-blue-50 px-3 py-2 rounded-md">
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.268 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   <span>
-                    {unresolvedIngredients.length} ingredient(s) need resolution before publishing
+                    {unresolvedIngredients.length} new pantry item(s) will be created when you publish
                   </span>
                 </div>
               ) : ingredients.length > 0 ? (
@@ -451,10 +499,10 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
               <button
                 type="button"
                 onClick={handlePublish}
-                disabled={saving || !!errors.title || hasUnresolvedIngredients}
+                disabled={saving || !!errors.title}
                 className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {saving ? 'Publishing...' : 'Publish Recipe'}
+                {saving ? 'Publishing...' : hasUnresolvedIngredients ? `Publish & Create ${unresolvedIngredients.length} Pantry Items` : 'Publish Recipe'}
               </button>
             )}
           </div>

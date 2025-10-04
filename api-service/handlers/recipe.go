@@ -1267,12 +1267,8 @@ func (h *RecipeHandler) DeleteIngredient(c *gin.Context) {
 func (h *RecipeHandler) SearchPantryItems(c *gin.Context) {
 	logger := middleware.LogWithContext(c)
 
-	// Parse query parameter
+	// Parse query parameter - now optional, empty returns all items
 	query := c.Query("q")
-	if query == "" {
-		BadRequestError(c, "query parameter 'q' is required")
-		return
-	}
 
 	// Parse user_id parameter - required for user-scoped search
 	userIDStr := c.Query("user_id")
@@ -1300,23 +1296,38 @@ func (h *RecipeHandler) SearchPantryItems(c *gin.Context) {
 		"limit":   limit,
 	}).Debug("Searching pantry items")
 
-	// Search pantry items using fuzzy matching (ILIKE for PostgreSQL)
-	// This supports partial matches and is case-insensitive, scoped to user
-	searchQuery := `
-		SELECT id, user_id, name, category, default_unit, created_at, updated_at
-		FROM pantry_items
-		WHERE name ILIKE '%' || $1 || '%' AND user_id = $2
-		ORDER BY
-			-- Exact matches first
-			CASE WHEN LOWER(name) = LOWER($1) THEN 1 ELSE 2 END,
-			-- Then by length (shorter names first for closer matches)
-			LENGTH(name),
-			-- Finally alphabetically
-			name
-		LIMIT $3
-	`
+	// Build query based on whether search query is provided
+	var searchQuery string
+	var rows *sql.Rows
 
-	rows, err := h.db.DB.Query(searchQuery, query, userID, limit)
+	if query == "" {
+		// Return all pantry items for the user when query is empty
+		searchQuery = `
+			SELECT id, user_id, name, category, default_unit, created_at, updated_at
+			FROM pantry_items
+			WHERE user_id = $1
+			ORDER BY name
+			LIMIT $2
+		`
+		rows, err = h.db.DB.Query(searchQuery, userID, limit)
+	} else {
+		// Search pantry items using fuzzy matching (ILIKE for PostgreSQL)
+		// This supports partial matches and is case-insensitive, scoped to user
+		searchQuery = `
+			SELECT id, user_id, name, category, default_unit, created_at, updated_at
+			FROM pantry_items
+			WHERE name ILIKE '%' || $1 || '%' AND user_id = $2
+			ORDER BY
+				-- Exact matches first
+				CASE WHEN LOWER(name) = LOWER($1) THEN 1 ELSE 2 END,
+				-- Then by length (shorter names first for closer matches)
+				LENGTH(name),
+				-- Finally alphabetically
+				name
+			LIMIT $3
+		`
+		rows, err = h.db.DB.Query(searchQuery, query, userID, limit)
+	}
 	if err != nil {
 		logger.WithError(err).Error("Failed to search pantry items")
 		InternalServerError(c, "failed to search pantry items")
@@ -1982,4 +1993,85 @@ func (h *RecipeHandler) DeletePantryItem(c *gin.Context) {
 		"id":      ingredientID,
 		"name":    ingredientName,
 	})
+}
+
+// SuggestPantryItemName handles POST /pantry/suggest-name requests
+func (h *RecipeHandler) SuggestPantryItemName(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse request body
+	var suggestionRequest struct {
+		IngredientText       string   `json:"ingredient_text" binding:"required"`
+		ExistingPantryItems  []string `json:"existing_pantry_items,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&suggestionRequest); err != nil {
+		logger.WithError(err).Warn("Pantry name suggestion binding failed")
+		ValidationError(c, "Invalid request format. ingredient_text is required.")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"ingredient_text": suggestionRequest.IngredientText,
+		"existing_items_count": len(suggestionRequest.ExistingPantryItems),
+	}).Info("Requesting pantry name suggestion")
+
+	// Call parser service for AI-powered suggestion
+	parserURL := "http://parser-service:8081/suggest-pantry-name" // Use Docker service name
+
+	// Ensure existing_pantry_items is never nil to avoid parser service validation issues
+	existingItems := suggestionRequest.ExistingPantryItems
+	if existingItems == nil {
+		existingItems = []string{}
+	}
+
+	payload := map[string]interface{}{
+		"ingredient_text":        suggestionRequest.IngredientText,
+		"existing_pantry_items":  existingItems,
+	}
+
+	// Create HTTP request
+	reqBody, err := json.Marshal(payload)
+	if err != nil {
+		logger.WithError(err).Error("Failed to marshal pantry suggestion request")
+		InternalServerError(c, "failed to prepare suggestion request")
+		return
+	}
+
+	// Make request to parser service
+	resp, err := http.Post(parserURL, "application/json", strings.NewReader(string(reqBody)))
+	if err != nil {
+		logger.WithError(err).Error("Failed to call parser service for pantry suggestion")
+		InternalServerError(c, "failed to get pantry name suggestion")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.WithField("status_code", resp.StatusCode).Error("Parser service returned error for pantry suggestion")
+		InternalServerError(c, "pantry suggestion service unavailable")
+		return
+	}
+
+	// Parse parser service response
+	var suggestionResponse struct {
+		SuggestedName string  `json:"suggested_name"`
+		Confidence    float64 `json:"confidence"`
+		Reasoning     string  `json:"reasoning"`
+		OriginalText  string  `json:"original_text"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&suggestionResponse); err != nil {
+		logger.WithError(err).Error("Failed to parse pantry suggestion response")
+		InternalServerError(c, "failed to parse suggestion response")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"ingredient_text":  suggestionRequest.IngredientText,
+		"suggested_name":   suggestionResponse.SuggestedName,
+		"confidence":       suggestionResponse.Confidence,
+	}).Info("Successfully generated pantry name suggestion")
+
+	// Return standardized response
+	SuccessResponse(c, suggestionResponse)
 }

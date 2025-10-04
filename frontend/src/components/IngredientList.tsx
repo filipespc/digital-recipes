@@ -145,14 +145,25 @@ export default function IngredientList({
     setLoading(prev => ({ ...prev, [ingredientId]: true }));
 
     try {
-      const updatedIngredient = await RecipeAPI.linkIngredientToCanonical(
+      const updatedIngredient = await RecipeAPI.linkIngredientToPantryItem(
         recipeId,
         ingredientId,
         pantryItem.id
       );
 
+      // Find the original ingredient to preserve its data
+      const originalIngredient = ingredients.find(ing => ing.id === ingredientId);
+
+      // Merge the updated data with the original ingredient data to preserve all fields
+      const completeUpdatedIngredient = {
+        ...originalIngredient, // Keep all original fields
+        ...updatedIngredient,   // Apply updates from API
+        pantry_item_name: pantryItem.name,
+        pantry_item_id: pantryItem.id
+      };
+
       const updatedIngredients = ingredients.map(ing =>
-        ing.id === ingredientId ? updatedIngredient : ing
+        ing.id === ingredientId ? completeUpdatedIngredient : ing
       );
       onIngredientsChange(updatedIngredients);
     } catch (error) {
@@ -180,21 +191,23 @@ export default function IngredientList({
 
       {/* Existing Ingredients List */}
       <div className="space-y-3">
-        {ingredients.map((ingredient) => (
-          <IngredientItem
-            key={ingredient.id}
-            ingredient={ingredient}
-            recipeId={recipeId}
-            isEditing={editingId === ingredient.id}
-            loading={loading[ingredient.id] || false}
-            error={errors[ingredient.id]}
-            onEdit={() => setEditingId(ingredient.id)}
-            onCancelEdit={() => setEditingId(null)}
-            onUpdate={handleUpdateIngredient}
-            onDelete={handleDeleteIngredient}
-            onLinkToPantryItem={handleLinkToPantryItem}
-          />
-        ))}
+        {ingredients.map((ingredient) => {
+          return (
+            <IngredientItem
+              key={ingredient.id}
+              ingredient={ingredient}
+              recipeId={recipeId}
+              isEditing={editingId === ingredient.id}
+              loading={loading[ingredient.id] || false}
+              error={errors[ingredient.id]}
+              onEdit={() => setEditingId(ingredient.id)}
+              onCancelEdit={() => setEditingId(null)}
+              onUpdate={handleUpdateIngredient}
+              onDelete={handleDeleteIngredient}
+              onLinkToPantryItem={handleLinkToPantryItem}
+            />
+          );
+        })}
       </div>
 
       {/* Add New Ingredient Form */}
@@ -412,7 +425,7 @@ function IngredientItem({
             <span className="text-sm font-medium text-gray-900">
               {ingredient.original_text}
             </span>
-            {(ingredient.canonical_ingredient_id || ingredient.pantry_item_id) && (
+            {ingredient.pantry_item_id && (
               <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
                 <svg className="h-3 w-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />

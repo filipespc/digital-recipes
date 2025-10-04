@@ -19,20 +19,61 @@ export default function IngredientStateToggle({
 }: IngredientStateToggleProps) {
   // Determine initial state based on whether ingredient is linked
   const [state, setState] = useState<IngredientState>(
-    ingredient.canonical_ingredient_id || ingredient.pantry_item_id ? 'linked' : 'new'
+    ingredient.pantry_item_id ? 'linked' : 'new'
   );
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PantryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [newPantryItemName, setNewPantryItemName] = useState(
-    ingredient.suggested_pantry_item_name || extractPantryItemName(ingredient.original_text)
-  );
+  const [newPantryItemName, setNewPantryItemName] = useState('');
+  const [loadingSuggestion, setLoadingSuggestion] = useState(false);
   const [selectedPantryItem, setSelectedPantryItem] = useState<PantryItem | null>(null);
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const searchPantryItems = useCallback(async (query: string) => {
+    setLoading(true);
+    try {
+      // If query is empty, load all pantry items; otherwise search
+      const results = await RecipeAPI.searchPantryItems(query || '', 1);
+      setSearchResults(results);
+    } catch (error) {
+      console.error('Failed to search pantry items:', error);
+      setSearchResults([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Load AI-powered pantry name suggestion when in 'new' state
+  useEffect(() => {
+    if (state === 'new' && !newPantryItemName && !loadingSuggestion) {
+      setLoadingSuggestion(true);
+
+      RecipeAPI.suggestPantryItemName(ingredient.original_text)
+        .then((suggestion) => {
+          setNewPantryItemName(suggestion.suggested_name);
+        })
+        .catch((error) => {
+          console.error('Failed to get AI pantry suggestion:', error);
+          // Fallback to regex extraction
+          setNewPantryItemName(extractPantryItemName(ingredient.original_text));
+        })
+        .finally(() => {
+          setLoadingSuggestion(false);
+        });
+    }
+  }, [state, ingredient.original_text, newPantryItemName, loadingSuggestion]);
+
+  // Load all pantry items when dropdown opens
+  useEffect(() => {
+    if (isDropdownOpen && searchResults.length === 0 && !searchQuery) {
+      // Load all pantry items initially
+      searchPantryItems('');
+    }
+  }, [isDropdownOpen, searchPantryItems, searchResults.length, searchQuery]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -49,24 +90,6 @@ export default function IngredientStateToggle({
         clearTimeout(searchTimeoutRef.current);
       }
     };
-  }, []);
-
-  const searchPantryItems = useCallback(async (query: string) => {
-    if (!query.trim()) {
-      setSearchResults([]);
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const results = await RecipeAPI.searchPantryItems(query, 1);
-      setSearchResults(results);
-    } catch (error) {
-      console.error('Failed to search pantry items:', error);
-      setSearchResults([]);
-    } finally {
-      setLoading(false);
-    }
   }, []);
 
   const handleSearchChange = (value: string) => {
@@ -111,8 +134,8 @@ export default function IngredientStateToggle({
 
     setState(state === 'new' ? 'linked' : 'new');
     if (state === 'linked') {
-      // When switching from linked to new, open the name for editing
-      setNewPantryItemName(ingredient.suggested_pantry_item_name || extractPantryItemName(ingredient.original_text));
+      // When switching from linked to new, reset name and let useEffect handle AI suggestion
+      setNewPantryItemName('');
     } else {
       // When switching from new to linked, open the search dropdown
       setIsDropdownOpen(true);
@@ -127,15 +150,23 @@ export default function IngredientStateToggle({
           <div className="flex-1">
             <div className="flex items-center space-x-2 text-blue-700 text-sm mb-2">
               <span className="text-lg">🆕</span>
-              <span className="font-medium">Will create new pantry item:</span>
+              <span className="font-medium">Will auto-create when publishing:</span>
             </div>
-            <input
-              type="text"
-              value={newPantryItemName}
-              onChange={(e) => setNewPantryItemName(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              placeholder="Enter pantry item name"
-            />
+            <div className="relative">
+              <input
+                type="text"
+                value={newPantryItemName}
+                onChange={(e) => setNewPantryItemName(e.target.value)}
+                disabled={loadingSuggestion}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                placeholder={loadingSuggestion ? "Generating AI suggestion..." : "Enter pantry item name"}
+              />
+              {loadingSuggestion && (
+                <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                </div>
+              )}
+            </div>
           </div>
           <button
             type="button"
@@ -148,6 +179,7 @@ export default function IngredientStateToggle({
         {newPantryItemName.trim() && (
           <div className="mt-2 flex justify-end">
             <button
+              type="button"
               onClick={handleCreateNewPantryItem}
               disabled={loading}
               className="inline-flex items-center px-3 py-1 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -168,10 +200,10 @@ export default function IngredientStateToggle({
   }
 
   // Linked state
-  const currentPantryItem = selectedPantryItem || (ingredient.canonical_ingredient_id ? {
-    id: ingredient.canonical_ingredient_id,
-    name: 'Linked Item', // This would come from the API in real implementation
-    is_approved: true,
+  const currentPantryItem = selectedPantryItem || (ingredient.pantry_item_id && ingredient.pantry_item_name ? {
+    id: ingredient.pantry_item_id,
+    name: ingredient.pantry_item_name,
+    user_id: 1,
     created_at: '',
     updated_at: ''
   } : null);
@@ -190,6 +222,7 @@ export default function IngredientStateToggle({
 
           <div className="relative" ref={dropdownRef}>
             <button
+              type="button"
               onClick={() => setIsDropdownOpen(!isDropdownOpen)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-left bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 flex items-center justify-between"
             >
@@ -209,7 +242,7 @@ export default function IngredientStateToggle({
                     type="text"
                     value={searchQuery}
                     onChange={(e) => handleSearchChange(e.target.value)}
-                    placeholder="Search pantry items..."
+                    placeholder="Type to filter pantry items..."
                     className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-green-500 focus:border-green-500"
                     autoFocus
                   />
@@ -219,7 +252,7 @@ export default function IngredientStateToggle({
                 {loading && (
                   <div className="px-3 py-2 text-sm text-gray-500 flex items-center">
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-green-600 mr-2"></div>
-                    Searching...
+                    Loading pantry items...
                   </div>
                 )}
 
@@ -227,24 +260,17 @@ export default function IngredientStateToggle({
                 {!loading && searchResults.length > 0 && (
                   <div>
                     <div className="px-3 py-1 text-xs font-medium text-gray-500 border-b border-gray-100">
-                      Found {searchResults.length} pantry item{searchResults.length !== 1 ? 's' : ''}
+                      {searchQuery ? `Filtered: ${searchResults.length} item${searchResults.length !== 1 ? 's' : ''}` : `All pantry items (${searchResults.length})`}
                     </div>
                     {searchResults.map((pantryItem) => (
                       <button
                         key={pantryItem.id}
+                        type="button"
                         onClick={() => handleSelectPantryItem(pantryItem)}
                         className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center justify-between"
                       >
                         <div>
                           <div className="font-medium text-gray-900">{pantryItem.name}</div>
-                          {pantryItem.is_approved && (
-                            <div className="text-xs text-green-600 flex items-center mt-1">
-                              <svg className="h-3 w-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                              Approved
-                            </div>
-                          )}
                         </div>
                         <svg className="h-4 w-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.102m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
@@ -261,13 +287,13 @@ export default function IngredientStateToggle({
                   </div>
                 )}
 
-                {/* Empty State */}
-                {!loading && !searchQuery.trim() && (
+                {/* Empty State - only show if really no items */}
+                {!loading && !searchQuery && searchResults.length === 0 && (
                   <div className="px-3 py-4 text-sm text-gray-500 text-center">
                     <svg className="mx-auto h-6 w-6 text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                     </svg>
-                    Start typing to search for pantry items
+                    No pantry items yet. Start by creating one!
                   </div>
                 )}
               </div>
@@ -294,8 +320,10 @@ function extractPantryItemName(originalText: string): string {
   let name = originalText
     .replace(/^\d+(\.\d+)?\s*/, '') // Remove leading numbers like "1 ", "2.5 "
     .replace(/^\d+\/\d+\s*/, '') // Remove fractions like "1/2 "
-    .replace(/\b(cups?|tbsp|tsp|oz|lbs?|grams?|kg|ml|liters?|g|l)\b/gi, ' ') // Remove units
-    .replace(/\b(large|small|medium|fresh|dried|chopped|diced|sliced|grande|pequeno|médio|fresco|seco|picado|cortado)\b/gi, ' ') // Remove descriptors (English + Portuguese)
+    .replace(/\b(cups?|tbsp|tsp|oz|lbs?|grams?|kg|ml|liters?|g|l)\b/gi, ' ') // Remove English units
+    .replace(/\b(colheres?|colher|chá|sopa|xícaras?|xícara|gramas?|quilos?|litros?)\b/gi, ' ') // Remove Portuguese units
+    .replace(/\([^)]*\)/g, ' ') // Remove anything in parentheses
+    .replace(/\b(large|small|medium|fresh|dried|chopped|diced|sliced|grande|pequeno|pequena|médio|média|fresco|fresca|seco|seca|picado|picada|cortado|cortada|dente|dentes|moída|moído|na hora)\b/gi, ' ') // Remove descriptors (English + Portuguese)
     .replace(/[,\.]\s*$/, '') // Remove trailing punctuation
     .replace(/\s+/g, ' ') // Normalize multiple spaces to single space
     .trim();

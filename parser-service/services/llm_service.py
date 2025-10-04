@@ -299,10 +299,19 @@ Return JSON format:
         # Remove quantities and common units
         name = re.sub(r'^\d+(\.\d+)?\s*', '', ingredient_text)  # Remove leading numbers
         name = re.sub(r'^\d+/\d+\s*', '', name)  # Remove fractions
+
+        # Remove anything in parentheses (like "(chá)", "(sopa)")
+        name = re.sub(r'\([^)]*\)', '', name)
+
+        # Remove English units
         name = re.sub(r'\b(cups?|tbsp|tsp|oz|lbs?|grams?|kg|ml|liters?|g|l)\b', ' ', name, flags=re.IGNORECASE)
 
-        # Remove common descriptors
+        # Remove Portuguese units
+        name = re.sub(r'\b(colheres?|colher|chá|sopa|xícaras?|xícara|gramas?|quilos?|litros?)\b', ' ', name, flags=re.IGNORECASE)
+
+        # Remove common descriptors (English and Portuguese)
         name = re.sub(r'\b(large|small|medium|fresh|dried|chopped|diced|sliced|minced)\b', ' ', name, flags=re.IGNORECASE)
+        name = re.sub(r'\b(grande|pequeno|pequena|médio|média|fresco|fresca|seco|seca|picado|picada|cortado|cortada|dente|dentes|moída|moído|na hora)\b', ' ', name, flags=re.IGNORECASE)
 
         # Clean up spaces and punctuation
         name = re.sub(r'[,\.]$', '', name)  # Remove trailing punctuation
@@ -313,5 +322,5 @@ Return JSON format:
         if not name:
             name = ingredient_text
 
-        # Capitalize first letter
-        return name.lower().strip()
+        # Return with proper capitalization
+        return name.strip().capitalize() if name else ingredient_text
