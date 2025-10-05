@@ -107,10 +107,10 @@ export default function IngredientSearchAutocomplete({
   const showCreateOption = searchQuery.trim() &&
     searchResults.length === 0 &&
     !loading &&
-    !ingredient.canonical_ingredient_id && !ingredient.pantry_item_id;
+    !ingredient.pantry_item_id;
 
   // Show different UI based on link status
-  if (ingredient.canonical_ingredient_id || ingredient.pantry_item_id) {
+  if (ingredient.pantry_item_id) {
     return (
       <div className="flex items-center justify-between mt-2">
         <div className="flex items-center space-x-2 text-green-700 text-sm">

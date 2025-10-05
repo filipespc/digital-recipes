@@ -34,6 +34,10 @@ export interface PantryItem {
   updated_at: string;
 }
 
+export interface PantryItemWithSimilarity extends PantryItem {
+  similarity: number;
+}
+
 // Keep for backward compatibility during transition
 export interface CanonicalIngredient {
   id: number;

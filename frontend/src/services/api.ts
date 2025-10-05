@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Recipe, RecipeWithIngredients, RecipeListResponse, StandardResponse, RecipeIngredient, CanonicalIngredient, PantryItem, PantryItemManagement, IngredientManagement } from '@/types/recipe';
+import { Recipe, RecipeWithIngredients, RecipeListResponse, StandardResponse, RecipeIngredient, CanonicalIngredient, PantryItem, PantryItemWithSimilarity, PantryItemManagement, IngredientManagement } from '@/types/recipe';
 import { UPLOAD_CONFIG } from '@/constants/upload';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
@@ -199,6 +199,17 @@ export class RecipeAPI {
     return response.data.data;
   }
 
+  static async fuzzySearchPantryItems(
+    query: string,
+    userId: number,
+    threshold: number = 0.6
+  ): Promise<PantryItemWithSimilarity[]> {
+    const response = await apiClient.get<StandardResponse<PantryItemWithSimilarity[]>>(
+      `/pantry/fuzzy-search?q=${encodeURIComponent(query)}&user_id=${userId}&threshold=${threshold}`
+    );
+    return response.data.data;
+  }
+
   // Keep for backward compatibility during transition
   static async searchCanonicalIngredients(query: string, userId: number): Promise<CanonicalIngredient[]> {
     // Redirect to pantry search
@@ -237,7 +248,7 @@ export class RecipeAPI {
   ): Promise<RecipeIngredient> {
     const response = await apiClient.put<StandardResponse<RecipeIngredient>>(
       `/recipes/${recipeId}/ingredients/${ingredientId}/link`,
-      { canonical_ingredient_id: canonicalIngredientId }
+      { pantry_item_id: canonicalIngredientId }
     );
     return response.data.data;
   }

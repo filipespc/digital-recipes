@@ -121,7 +121,30 @@ pkill -f "npm run dev"
 - If Next.js starts on a different port due to conflicts, kill the conflicting process instead of adding new origins
 
 ### Full Stack Restart Protocol
-**IMPORTANT**: Always ensure frontend runs on port 3000 for proper CORS configuration:
+
+#### Quick Method (Using Scripts)
+**Recommended**: Use the comprehensive restart script that handles everything automatically:
+
+```bash
+# Complete restart with health checks and verification
+./restart-all.sh
+
+# Or to just stop everything
+./stop-all.sh
+```
+
+These scripts provide:
+- Colored output for better visibility
+- Graceful shutdown before force killing
+- Automatic environment variable loading from .env
+- PID tracking for clean process management
+- Comprehensive health checks
+- Log file management in `logs/` directory
+- Automatic retry logic for service startup
+- Port verification and cleanup
+
+#### Manual Method
+If you need to restart services manually or the scripts aren't available:
 
 ```bash
 # 1. Stop all services
@@ -132,8 +155,8 @@ pkill -f "node.*next.*dev"
 # 2. Force kill anything using port 3000
 netstat -tulpn 2>/dev/null | grep :3000 | awk '{print $7}' | cut -d'/' -f1 | xargs -r kill -9
 
-# 3. Start backend services first
-docker-compose up -d
+# 3. Start backend services first (with env var)
+INTERNAL_SERVICE_SECRET=dev-secret-key docker-compose up -d
 
 # 4. Start frontend on port 3000 (force if needed)
 cd frontend && npm run dev -- --port 3000 > ../frontend.log 2>&1 &
@@ -144,11 +167,71 @@ curl -f http://localhost:8080/health || echo "Backend not ready"
 curl -f http://localhost:3000 | head -10 || echo "Frontend not ready"
 ```
 
-### Full Stack Startup (Initial)
-```bash
-# Start backend services first
-docker-compose up -d
+### Service Management Scripts
 
-# Then start frontend
-cd frontend && npm run dev > ../frontend.log 2>&1 &
+#### restart-all.sh
+Full service restart with comprehensive checks:
+1. **Stops all frontend processes** - npm, Next.js, frees ports 3000-3002
+2. **Stops backend services** - docker-compose down with orphan cleanup
+3. **Loads environment variables** - from .env with fallback defaults
+4. **Starts backend services** - with health check waiting
+5. **Verifies backend** - checks individual service health
+6. **Starts frontend** - ensures port 3000, with PID tracking
+7. **Final verification** - checks all critical ports
+
+#### stop-all.sh
+Clean shutdown of all services:
+- Stops frontend using tracked PID
+- Kills any remaining frontend processes
+- Stops all Docker services
+- Cleans up PID files
+
+### Service URLs
+- **Frontend**: http://localhost:3000
+- **Backend API**: http://localhost:8080
+- **Parser Service**: http://localhost:8081
+- **PostgreSQL**: localhost:5432
+- **Redis**: localhost:6379
+
+### Log Locations
+- **Frontend**: `logs/frontend.log` or check with `tail -f frontend.log`
+- **Backend**: `docker-compose logs -f api-service`
+- **Parser**: `docker-compose logs -f parser-service`
+- **Docker startup**: `logs/docker-up.log`
+- **Docker shutdown**: `logs/docker-down.log`
+
+### Troubleshooting
+
+#### Frontend won't start on port 3000
+```bash
+# Force kill anything on port 3000
+lsof -ti :3000 | xargs -r kill -9
+
+# Or use fuser
+fuser -k 3000/tcp
+```
+
+#### Backend services won't start
+```bash
+# Check for env variables
+cat .env | grep -E "JWT_SECRET|INTERNAL_SERVICE_SECRET|GEMINI_API_KEY"
+
+# Set minimum required env vars
+export INTERNAL_SERVICE_SECRET=dev-secret-key
+export JWT_SECRET=dev-jwt-secret
+
+# Restart with env vars
+INTERNAL_SERVICE_SECRET=dev-secret-key docker-compose up -d
+```
+
+#### Check service health
+```bash
+# Backend health check
+curl http://localhost:8080/health
+
+# Check all Docker services
+docker-compose ps
+
+# View recent logs
+docker-compose logs --tail=50
 ```

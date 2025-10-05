@@ -21,3 +21,9 @@ type PantryItemInput struct {
 	Category    *string `json:"category,omitempty" binding:"omitempty,max=50"`
 	DefaultUnit *string `json:"default_unit,omitempty" binding:"omitempty,max=20"`
 }
+
+// PantryItemWithSimilarity represents a pantry item with its similarity score
+type PantryItemWithSimilarity struct {
+	PantryItem
+	Similarity float64 `json:"similarity" db:"similarity"`
+}

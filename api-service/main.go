@@ -243,6 +243,7 @@ func main() {
 		public.GET("/recipes", recipeHandler.GetRecipes)
 		public.GET("/recipes/:id", recipeHandler.GetRecipe)
 		public.GET("/pantry/search", recipeHandler.SearchPantryItems)
+		public.GET("/pantry/fuzzy-search", recipeHandler.FuzzySearchPantryItems)
 	}
 
 	// Internal service endpoints (authentication required)

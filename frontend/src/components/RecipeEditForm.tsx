@@ -202,7 +202,7 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
 
   // Check if all ingredients are resolved (linked to pantry items)
   const getUnresolvedIngredients = useCallback(() => {
-    return ingredients.filter(ingredient => !ingredient.canonical_ingredient_id && !ingredient.pantry_item_id);
+    return ingredients.filter(ingredient => !ingredient.pantry_item_id);
   }, [ingredients]);
 
   const unresolvedIngredients = getUnresolvedIngredients();
@@ -219,50 +219,79 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
     try {
       setSaving(true);
 
-      // Auto-create pantry items for unresolved ingredients
+      // Auto-create/link pantry items for unresolved ingredients
       if (hasUnresolvedIngredients && ingredients) {
-        const creationPromises = [];
+        // Fetch existing pantry items once for all ingredients
+        const existingPantryItems = await RecipeAPI.searchPantryItems('', 1);
+        const existingNames = existingPantryItems.map(item => item.name);
+
+        const linkPromises = [];
 
         for (const ingredient of ingredients) {
           if (!ingredient.pantry_item_id) {
-            // Get AI suggestion for pantry item name
-            const suggestionPromise = RecipeAPI.suggestPantryItemName(ingredient.original_text)
-              .then(suggestion => ({
-                ingredient,
-                suggestedName: suggestion.suggested_name
-              }))
+            // Get AI suggestion for pantry item name (with context)
+            const linkPromise = RecipeAPI.suggestPantryItemName(ingredient.original_text, existingNames)
+              .then(async (suggestion) => {
+                // Try fuzzy search to find existing match
+                const fuzzyMatches = await RecipeAPI.fuzzySearchPantryItems(suggestion.suggested_name, 1, 0.6);
+
+                if (fuzzyMatches.length > 0) {
+                  // Found existing item with ≥60% similarity - link to it
+                  const bestMatch = fuzzyMatches[0];
+                  return {
+                    ingredient,
+                    pantryItem: bestMatch,
+                    action: 'link' as const
+                  };
+                } else {
+                  // No match - will create new pantry item
+                  return {
+                    ingredient,
+                    suggestedName: suggestion.suggested_name,
+                    action: 'create' as const
+                  };
+                }
+              })
               .catch(() => ({
                 ingredient,
-                suggestedName: ingredient.original_text // Fallback to original text
+                suggestedName: ingredient.original_text, // Fallback to original text
+                action: 'create' as const
               }));
 
-            creationPromises.push(suggestionPromise);
+            linkPromises.push(linkPromise);
           }
         }
 
-        // Process all suggestions and create pantry items
-        const suggestionsToCreate = await Promise.all(creationPromises);
+        // Process all link/create decisions
+        const linkDecisions = await Promise.all(linkPromises);
 
-        for (const { ingredient, suggestedName } of suggestionsToCreate) {
+        for (const decision of linkDecisions) {
           try {
-            // Create the pantry item
-            const pantryItem = await RecipeAPI.createPantryItem(suggestedName, 1); // Using userId 1 for now
+            let pantryItemToLink;
 
-            // Link it to the ingredient
+            if (decision.action === 'link') {
+              // Link to existing pantry item
+              pantryItemToLink = decision.pantryItem;
+            } else {
+              // Create new pantry item
+              pantryItemToLink = await RecipeAPI.createPantryItem(decision.suggestedName, 1);
+            }
+
+            // Link the pantry item to the ingredient
             await RecipeAPI.linkIngredientToPantryItem(
               recipe.id,
-              ingredient.id,
-              pantryItem.id
+              decision.ingredient.id,
+              pantryItemToLink.id
             );
 
             // Update local state
             setIngredients(prev => prev?.map(ing =>
-              ing.id === ingredient.id
-                ? { ...ing, pantry_item_id: pantryItem.id, pantry_item_name: pantryItem.name }
+              ing.id === decision.ingredient.id
+                ? { ...ing, pantry_item_id: pantryItemToLink.id, pantry_item_name: pantryItemToLink.name }
                 : ing
             ) || []);
           } catch (err) {
-            console.error(`Failed to create pantry item for "${suggestedName}":`, err);
+            console.error(`Failed to process pantry item for ingredient:`, err);
           }
         }
       }

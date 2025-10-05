@@ -1375,6 +1375,120 @@ func (h *RecipeHandler) SearchPantryItems(c *gin.Context) {
 	SuccessResponse(c, pantryItems)
 }
 
+// FuzzySearchPantryItems handles GET /pantry/fuzzy-search requests
+// Uses PostgreSQL trigram similarity for fuzzy matching
+func (h *RecipeHandler) FuzzySearchPantryItems(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse query parameter - required for fuzzy search
+	query := c.Query("q")
+	if query == "" {
+		BadRequestError(c, "query parameter 'q' is required")
+		return
+	}
+
+	// Parse user_id parameter - required for user-scoped search
+	userIDStr := c.Query("user_id")
+	if userIDStr == "" {
+		BadRequestError(c, "query parameter 'user_id' is required")
+		return
+	}
+	userID, err := strconv.Atoi(userIDStr)
+	if err != nil {
+		BadRequestError(c, "invalid user_id parameter")
+		return
+	}
+
+	// Parse threshold parameter (default to 0.6 = 60%)
+	thresholdStr := c.DefaultQuery("threshold", "0.6")
+	threshold, err := strconv.ParseFloat(thresholdStr, 64)
+	if err != nil || threshold < 0 || threshold > 1 {
+		BadRequestError(c, "invalid threshold parameter. Must be between 0 and 1")
+		return
+	}
+
+	// Parse limit parameter (default to 10, max 50 for fuzzy search)
+	limitStr := c.DefaultQuery("limit", "10")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit < 1 || limit > 50 {
+		BadRequestError(c, "invalid limit parameter. Must be between 1 and 50")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"query":     query,
+		"user_id":   userID,
+		"threshold": threshold,
+		"limit":     limit,
+	}).Debug("Fuzzy searching pantry items")
+
+	// Fuzzy search using trigram similarity
+	searchQuery := `
+		SELECT
+			id,
+			user_id,
+			name,
+			category,
+			default_unit,
+			created_at,
+			updated_at,
+			similarity(name, $1) as similarity
+		FROM pantry_items
+		WHERE user_id = $2
+			AND similarity(name, $1) >= $3
+		ORDER BY similarity DESC, name
+		LIMIT $4
+	`
+
+	rows, err := h.db.DB.Query(searchQuery, query, userID, threshold, limit)
+	if err != nil {
+		logger.WithError(err).Error("Failed to fuzzy search pantry items")
+		InternalServerError(c, "failed to search pantry items")
+		return
+	}
+	defer rows.Close()
+
+	var pantryItems []models.PantryItemWithSimilarity
+	for rows.Next() {
+		var item models.PantryItemWithSimilarity
+		err := rows.Scan(
+			&item.ID,
+			&item.UserID,
+			&item.Name,
+			&item.Category,
+			&item.DefaultUnit,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+			&item.Similarity,
+		)
+		if err != nil {
+			logger.WithError(err).Error("Failed to scan pantry item")
+			InternalServerError(c, "failed to parse pantry item data")
+			return
+		}
+		pantryItems = append(pantryItems, item)
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.WithError(err).Error("Rows iteration error")
+		InternalServerError(c, "error reading pantry item data")
+		return
+	}
+
+	// Return empty array if no pantry items found
+	if pantryItems == nil {
+		pantryItems = []models.PantryItemWithSimilarity{}
+	}
+
+	logger.WithFields(logrus.Fields{
+		"query":        query,
+		"result_count": len(pantryItems),
+	}).Debug("Fuzzy pantry item search completed")
+
+	// Return standardized response
+	SuccessResponse(c, pantryItems)
+}
+
 // LinkIngredientToPantryItem handles PUT /recipes/:id/ingredients/:ingredient_id/link requests
 func (h *RecipeHandler) LinkIngredientToPantryItem(c *gin.Context) {
 	logger := middleware.LogWithContext(c)

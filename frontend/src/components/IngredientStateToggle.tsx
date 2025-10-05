@@ -52,12 +52,33 @@ export default function IngredientStateToggle({
     if (state === 'new' && !newPantryItemName && !loadingSuggestion) {
       setLoadingSuggestion(true);
 
-      RecipeAPI.suggestPantryItemName(ingredient.original_text)
+      // First, fetch existing pantry items to pass to AI
+      RecipeAPI.searchPantryItems('', 1) // Empty query returns all items
+        .then((existingItems) => {
+          const existingNames = existingItems.map(item => item.name);
+
+          // Get AI suggestion with context of existing items
+          return RecipeAPI.suggestPantryItemName(ingredient.original_text, existingNames);
+        })
         .then((suggestion) => {
-          setNewPantryItemName(suggestion.suggested_name);
+          // After getting AI suggestion, try fuzzy search to find similar items
+          return RecipeAPI.fuzzySearchPantryItems(suggestion.suggested_name, 1, 0.6)
+            .then((fuzzyMatches) => {
+              if (fuzzyMatches.length > 0) {
+                // Found a match with ≥60% similarity - switch to linked state
+                const bestMatch = fuzzyMatches[0]; // Already sorted by similarity DESC
+                setState('linked');
+                setSelectedPantryItem(bestMatch);
+                onLinkToPantryItem(ingredient.id, bestMatch);
+                setNewPantryItemName(''); // Clear since we're linking
+              } else {
+                // No match found - stay in new state with AI suggested name
+                setNewPantryItemName(suggestion.suggested_name);
+              }
+            });
         })
         .catch((error) => {
-          console.error('Failed to get AI pantry suggestion:', error);
+          console.error('Failed to get AI pantry suggestion or fuzzy match:', error);
           // Fallback to regex extraction
           setNewPantryItemName(extractPantryItemName(ingredient.original_text));
         })
@@ -65,7 +86,7 @@ export default function IngredientStateToggle({
           setLoadingSuggestion(false);
         });
     }
-  }, [state, ingredient.original_text, newPantryItemName, loadingSuggestion]);
+  }, [state, ingredient.original_text, newPantryItemName, loadingSuggestion, ingredient.id, onLinkToPantryItem]);
 
   // Load all pantry items when dropdown opens
   useEffect(() => {
