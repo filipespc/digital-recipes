@@ -264,6 +264,32 @@ export class RecipeAPI {
 
   // Pantry Item Management API Methods
 
+  static async batchResolvePantryItems(
+    recipeId: number,
+    ingredients: Array<{ ingredient_id: number; original_text: string }>,
+    userId: number
+  ): Promise<{
+    resolved: Array<{
+      ingredient_id: number;
+      action: 'linked' | 'created';
+      pantry_item: PantryItem;
+    }>;
+    errors?: Array<{
+      ingredient_id: number;
+      error: string;
+    }>;
+  }> {
+    const response = await apiClient.post<StandardResponse<any>>(
+      '/pantry/batch-resolve',
+      {
+        recipe_id: recipeId,
+        user_id: userId,
+        ingredients
+      }
+    );
+    return response.data.data;
+  }
+
   static async getPantryItemManagement(userId: number): Promise<PantryItemManagement[]> {
     const response = await apiClient.get<StandardResponse<PantryItemManagement[]>>(
       `/pantry/manage?user_id=${userId}`

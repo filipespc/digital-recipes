@@ -222,80 +222,48 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
     try {
       setSaving(true);
 
-      // Auto-create/link pantry items for unresolved ingredients
+      // Auto-create/link pantry items for unresolved ingredients using batch endpoint
       if (hasUnresolvedIngredients && ingredients) {
-        // Fetch existing pantry items once for all ingredients
-        const existingPantryItems = await RecipeAPI.searchPantryItems('', 1);
-        const existingNames = existingPantryItems.map(item => item.name);
+        const unresolvedItems = ingredients
+          .filter(ing => !ing.pantry_item_id)
+          .map(ing => ({
+            ingredient_id: ing.id,
+            original_text: ing.original_text
+          }));
 
-        const linkPromises = [];
+        try {
+          // Use batch endpoint to resolve all ingredients at once
+          const batchResult = await RecipeAPI.batchResolvePantryItems(
+            recipe.id,
+            unresolvedItems,
+            1 // TODO: Use actual user ID
+          );
 
-        for (const ingredient of ingredients) {
-          if (!ingredient.pantry_item_id) {
-            // Get AI suggestion for pantry item name (with context)
-            const linkPromise = RecipeAPI.suggestPantryItemName(ingredient.original_text, existingNames)
-              .then(async (suggestion) => {
-                // Try fuzzy search to find existing match
-                const fuzzyMatches = await RecipeAPI.fuzzySearchPantryItems(suggestion.suggested_name, 1, 0.6);
-
-                if (fuzzyMatches.length > 0) {
-                  // Found existing item with ≥60% similarity - link to it
-                  const bestMatch = fuzzyMatches[0];
+          // Update local state with resolved pantry items
+          if (batchResult.resolved && batchResult.resolved.length > 0) {
+            setIngredients(prev => {
+              if (!prev) return [];
+              return prev.map(ing => {
+                const resolved = batchResult.resolved.find(r => r.ingredient_id === ing.id);
+                if (resolved) {
                   return {
-                    ingredient,
-                    pantryItem: bestMatch,
-                    action: 'link' as const
-                  };
-                } else {
-                  // No match - will create new pantry item
-                  return {
-                    ingredient,
-                    suggestedName: suggestion.suggested_name,
-                    action: 'create' as const
+                    ...ing,
+                    pantry_item_id: resolved.pantry_item.id,
+                    pantry_item_name: resolved.pantry_item.name
                   };
                 }
-              })
-              .catch(() => ({
-                ingredient,
-                suggestedName: ingredient.original_text, // Fallback to original text
-                action: 'create' as const
-              }));
-
-            linkPromises.push(linkPromise);
+                return ing;
+              });
+            });
           }
-        }
 
-        // Process all link/create decisions
-        const linkDecisions = await Promise.all(linkPromises);
-
-        for (const decision of linkDecisions) {
-          try {
-            let pantryItemToLink;
-
-            if (decision.action === 'link') {
-              // Link to existing pantry item
-              pantryItemToLink = decision.pantryItem;
-            } else {
-              // Create new pantry item
-              pantryItemToLink = await RecipeAPI.createPantryItem(decision.suggestedName, 1);
-            }
-
-            // Link the pantry item to the ingredient
-            await RecipeAPI.linkIngredientToPantryItem(
-              recipe.id,
-              decision.ingredient.id,
-              pantryItemToLink.id
-            );
-
-            // Update local state
-            setIngredients(prev => prev?.map(ing =>
-              ing.id === decision.ingredient.id
-                ? { ...ing, pantry_item_id: pantryItemToLink.id, pantry_item_name: pantryItemToLink.name }
-                : ing
-            ) || []);
-          } catch (err) {
-            console.error(`Failed to process pantry item for ingredient:`, err);
+          // Log any errors for debugging
+          if (batchResult.errors && batchResult.errors.length > 0) {
+            console.error('Some ingredients failed to resolve:', batchResult.errors);
           }
+        } catch (err) {
+          console.error('Failed to batch resolve pantry items:', err);
+          // Could show user-friendly error here
         }
       }
 

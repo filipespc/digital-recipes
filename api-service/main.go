@@ -295,6 +295,7 @@ func main() {
 			pantryGroup.PUT("/:id", recipeHandler.UpdatePantryItem)
 			pantryGroup.DELETE("/:id", recipeHandler.DeletePantryItem)
 			pantryGroup.POST("/suggest-name", recipeHandler.SuggestPantryItemName)
+			pantryGroup.POST("/batch-resolve", recipeHandler.BatchResolvePantryItems)
 		}
 	}
 

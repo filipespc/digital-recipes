@@ -1495,6 +1495,207 @@ func (h *RecipeHandler) FuzzySearchPantryItems(c *gin.Context) {
 	SuccessResponse(c, pantryItems)
 }
 
+// BatchResolvePantryItems handles POST /pantry/batch-resolve requests
+// This endpoint processes multiple ingredients at once to avoid N+1 query problems
+func (h *RecipeHandler) BatchResolvePantryItems(c *gin.Context) {
+	logger := middleware.LogWithContext(c)
+
+	// Parse request body
+	var req models.BatchResolveRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.WithError(err).Warn("Batch resolve binding failed")
+		ValidationError(c, "Invalid request format")
+		return
+	}
+
+	// Verify user access
+	if !verifyUserAccess(c, req.UserID, logger) {
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"recipe_id":        req.RecipeID,
+		"user_id":          req.UserID,
+		"ingredient_count": len(req.Ingredients),
+	}).Info("Processing batch pantry item resolution")
+
+	response := models.BatchResolveResponse{
+		Resolved: []models.ResolvedPantryItem{},
+		Errors:   []models.ResolveError{},
+	}
+
+	// Get all existing pantry items for the user once
+	existingQuery := `
+		SELECT id, user_id, name, category, default_unit, created_at, updated_at
+		FROM pantry_items
+		WHERE user_id = $1
+		ORDER BY name
+	`
+
+	rows, err := h.db.DB.Query(existingQuery, req.UserID)
+	if err != nil {
+		logger.WithError(err).Error("Failed to fetch existing pantry items")
+		InternalServerError(c, "Failed to fetch existing pantry items")
+		return
+	}
+	defer rows.Close()
+
+	existingItems := []models.PantryItem{}
+	existingNames := []string{}
+	for rows.Next() {
+		var item models.PantryItem
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Name, &item.Category,
+			&item.DefaultUnit, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			logger.WithError(err).Error("Failed to scan pantry item")
+			continue
+		}
+		existingItems = append(existingItems, item)
+		existingNames = append(existingNames, item.Name)
+	}
+
+	// Process each ingredient
+	for _, ingredient := range req.Ingredients {
+		// Get AI suggestion for pantry name
+		suggestedName, err := h.getAISuggestion(ingredient.OriginalText, existingNames)
+		if err != nil {
+			logger.WithError(err).WithField("ingredient_id", ingredient.IngredientID).Warn("AI suggestion failed")
+			// Fallback to original text
+			suggestedName = ingredient.OriginalText
+		}
+
+		// Try fuzzy search to find existing match
+		fuzzyQuery := `
+			SELECT id, user_id, name, category, default_unit, created_at, updated_at,
+			       similarity(name, $1) as similarity
+			FROM pantry_items
+			WHERE user_id = $2
+			  AND similarity(name, $1) >= 0.6
+			ORDER BY similarity DESC
+			LIMIT 1
+		`
+
+		var pantryItem models.PantryItemWithSimilarity
+		err = h.db.DB.QueryRow(fuzzyQuery, suggestedName, req.UserID).Scan(
+			&pantryItem.ID, &pantryItem.UserID, &pantryItem.Name,
+			&pantryItem.Category, &pantryItem.DefaultUnit,
+			&pantryItem.CreatedAt, &pantryItem.UpdatedAt, &pantryItem.Similarity,
+		)
+
+		var resolvedItem models.ResolvedPantryItem
+		resolvedItem.IngredientID = ingredient.IngredientID
+
+		if err == sql.ErrNoRows {
+			// No fuzzy match found - create new pantry item
+			insertQuery := `
+				INSERT INTO pantry_items (user_id, name, created_at, updated_at)
+				VALUES ($1, $2, NOW(), NOW())
+				ON CONFLICT (user_id, name) DO UPDATE SET updated_at = NOW()
+				RETURNING id, user_id, name, category, default_unit, created_at, updated_at
+			`
+
+			var newItem models.PantryItem
+			err = h.db.DB.QueryRow(insertQuery, req.UserID, suggestedName).Scan(
+				&newItem.ID, &newItem.UserID, &newItem.Name,
+				&newItem.Category, &newItem.DefaultUnit,
+				&newItem.CreatedAt, &newItem.UpdatedAt,
+			)
+
+			if err != nil {
+				logger.WithError(err).WithField("ingredient_id", ingredient.IngredientID).Error("Failed to create pantry item")
+				response.Errors = append(response.Errors, models.ResolveError{
+					IngredientID: ingredient.IngredientID,
+					Error:        "Failed to create pantry item",
+				})
+				continue
+			}
+
+			resolvedItem.Action = "created"
+			resolvedItem.PantryItem = newItem
+
+			// Add to existing items for future fuzzy matches within this batch
+			existingItems = append(existingItems, newItem)
+			existingNames = append(existingNames, newItem.Name)
+		} else if err != nil {
+			logger.WithError(err).WithField("ingredient_id", ingredient.IngredientID).Error("Fuzzy search failed")
+			response.Errors = append(response.Errors, models.ResolveError{
+				IngredientID: ingredient.IngredientID,
+				Error:        "Failed to search for existing pantry item",
+			})
+			continue
+		} else {
+			// Found fuzzy match - use existing pantry item
+			resolvedItem.Action = "linked"
+			resolvedItem.PantryItem = pantryItem.PantryItem
+		}
+
+		// Link the pantry item to the ingredient
+		linkQuery := `
+			UPDATE recipe_ingredients
+			SET pantry_item_id = $1, updated_at = NOW()
+			WHERE id = $2 AND recipe_id = $3
+		`
+
+		_, err = h.db.DB.Exec(linkQuery, resolvedItem.PantryItem.ID, ingredient.IngredientID, req.RecipeID)
+		if err != nil {
+			logger.WithError(err).WithField("ingredient_id", ingredient.IngredientID).Error("Failed to link pantry item")
+			response.Errors = append(response.Errors, models.ResolveError{
+				IngredientID: ingredient.IngredientID,
+				Error:        "Failed to link pantry item to ingredient",
+			})
+			continue
+		}
+
+		response.Resolved = append(response.Resolved, resolvedItem)
+	}
+
+	logger.WithFields(logrus.Fields{
+		"resolved_count": len(response.Resolved),
+		"error_count":    len(response.Errors),
+	}).Info("Batch resolution completed")
+
+	SuccessResponse(c, response)
+}
+
+// getAISuggestion is a helper method to get AI pantry name suggestion
+func (h *RecipeHandler) getAISuggestion(ingredientText string, existingItems []string) (string, error) {
+	// Call parser service for AI-powered suggestion
+	parserURL := "http://parser-service:8081/suggest-pantry-name"
+
+	if existingItems == nil {
+		existingItems = []string{}
+	}
+
+	payload := map[string]interface{}{
+		"ingredient_text":       ingredientText,
+		"existing_pantry_items": existingItems,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := http.Post(parserURL, "application/json", strings.NewReader(string(jsonData)))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("parser service returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		SuggestedName string `json:"suggested_name"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	return result.SuggestedName, nil
+}
+
 // LinkIngredientToPantryItem handles PUT /recipes/:id/ingredients/:ingredient_id/link requests
 func (h *RecipeHandler) LinkIngredientToPantryItem(c *gin.Context) {
 	logger := middleware.LogWithContext(c)

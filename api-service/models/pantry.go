@@ -27,3 +27,35 @@ type PantryItemWithSimilarity struct {
 	PantryItem
 	Similarity float64 `json:"similarity" db:"similarity"`
 }
+
+// BatchResolveRequest represents a request to resolve multiple ingredients to pantry items
+type BatchResolveRequest struct {
+	RecipeID    int                  `json:"recipe_id" binding:"required"`
+	UserID      int                  `json:"user_id" binding:"required"`
+	Ingredients []BatchResolveItem   `json:"ingredients" binding:"required,min=1,max=50"`
+}
+
+// BatchResolveItem represents a single ingredient to resolve
+type BatchResolveItem struct {
+	IngredientID int    `json:"ingredient_id" binding:"required"`
+	OriginalText string `json:"original_text" binding:"required,min=1,max=500"`
+}
+
+// BatchResolveResponse represents the response for batch resolve operation
+type BatchResolveResponse struct {
+	Resolved   []ResolvedPantryItem `json:"resolved"`
+	Errors     []ResolveError       `json:"errors,omitempty"`
+}
+
+// ResolvedPantryItem represents a successfully resolved pantry item
+type ResolvedPantryItem struct {
+	IngredientID int         `json:"ingredient_id"`
+	Action       string      `json:"action"` // "linked" or "created"
+	PantryItem   PantryItem  `json:"pantry_item"`
+}
+
+// ResolveError represents an error resolving a specific ingredient
+type ResolveError struct {
+	IngredientID int    `json:"ingredient_id"`
+	Error        string `json:"error"`
+}
