@@ -49,6 +49,11 @@ export default function IngredientStateToggle({
 
   // Load AI-powered pantry name suggestion when in 'new' state
   useEffect(() => {
+    // Skip if ingredient already has a pantry_item_id
+    if (ingredient.pantry_item_id) {
+      return;
+    }
+
     if (state === 'new' && !newPantryItemName && !loadingSuggestion) {
       setLoadingSuggestion(true);
 
@@ -86,7 +91,7 @@ export default function IngredientStateToggle({
           setLoadingSuggestion(false);
         });
     }
-  }, [state, ingredient.original_text, newPantryItemName, loadingSuggestion, ingredient.id, onLinkToPantryItem]);
+  }, [state, ingredient.original_text, ingredient.pantry_item_id, newPantryItemName, loadingSuggestion, ingredient.id, onLinkToPantryItem]);
 
   // Load all pantry items when dropdown opens
   useEffect(() => {

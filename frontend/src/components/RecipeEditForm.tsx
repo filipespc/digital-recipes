@@ -202,11 +202,14 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
 
   // Check if all ingredients are resolved (linked to pantry items)
   const getUnresolvedIngredients = useCallback(() => {
+    // Ensure we're checking the current ingredients state
+    if (!ingredients || ingredients.length === 0) return [];
     return ingredients.filter(ingredient => !ingredient.pantry_item_id);
   }, [ingredients]);
 
   const unresolvedIngredients = getUnresolvedIngredients();
   const hasUnresolvedIngredients = unresolvedIngredients.length > 0;
+
 
   const handlePublish = async () => {
     // Validate all required fields

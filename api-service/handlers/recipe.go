@@ -1282,6 +1282,22 @@ func (h *RecipeHandler) SearchPantryItems(c *gin.Context) {
 		return
 	}
 
+	// Verify the authenticated user matches the requested user_id
+	authenticatedUserID := middleware.GetUserID(c)
+	if authenticatedUserID == 0 {
+		AuthenticationError(c, "authentication required")
+		return
+	}
+
+	if authenticatedUserID != userID {
+		logger.WithFields(logrus.Fields{
+			"authenticated_user": authenticatedUserID,
+			"requested_user":     userID,
+		}).Warn("Unauthorized access attempt: user trying to search another user's pantry")
+		AuthorizationError(c, "access denied: cannot search other users' pantry items")
+		return
+	}
+
 	// Parse limit parameter (default to 20, max 100)
 	limitStr := c.DefaultQuery("limit", "20")
 	limit, err := strconv.Atoi(limitStr)
@@ -1387,6 +1403,28 @@ func (h *RecipeHandler) FuzzySearchPantryItems(c *gin.Context) {
 		return
 	}
 
+	// Input validation to prevent SQL injection and ensure query safety
+	query = strings.TrimSpace(query)
+	if len(query) < 2 {
+		BadRequestError(c, "query must be at least 2 characters long")
+		return
+	}
+	if len(query) > 100 {
+		BadRequestError(c, "query must not exceed 100 characters")
+		return
+	}
+
+	// Check for potentially dangerous SQL characters/patterns
+	// Note: These are validated even though we use parameterized queries as defense in depth
+	if strings.ContainsAny(query, ";'\"\\") ||
+		strings.Contains(strings.ToLower(query), "drop") ||
+		strings.Contains(strings.ToLower(query), "delete") ||
+		strings.Contains(strings.ToLower(query), "insert") ||
+		strings.Contains(strings.ToLower(query), "update") {
+		BadRequestError(c, "query contains invalid characters or SQL keywords")
+		return
+	}
+
 	// Parse user_id parameter - required for user-scoped search
 	userIDStr := c.Query("user_id")
 	if userIDStr == "" {
@@ -1399,19 +1437,44 @@ func (h *RecipeHandler) FuzzySearchPantryItems(c *gin.Context) {
 		return
 	}
 
-	// Parse threshold parameter (default to 0.6 = 60%)
-	thresholdStr := c.DefaultQuery("threshold", "0.6")
-	threshold, err := strconv.ParseFloat(thresholdStr, 64)
-	if err != nil || threshold < 0 || threshold > 1 {
-		BadRequestError(c, "invalid threshold parameter. Must be between 0 and 1")
+	// Verify the authenticated user matches the requested user_id
+	authenticatedUserID := middleware.GetUserID(c)
+	if authenticatedUserID == 0 {
+		AuthenticationError(c, "authentication required")
 		return
 	}
 
-	// Parse limit parameter (default to 10, max 50 for fuzzy search)
+	if authenticatedUserID != userID {
+		logger.WithFields(logrus.Fields{
+			"authenticated_user": authenticatedUserID,
+			"requested_user":     userID,
+		}).Warn("Unauthorized access attempt: user trying to search another user's pantry")
+		AuthorizationError(c, "access denied: cannot search other users' pantry items")
+		return
+	}
+
+	// Parse threshold parameter (default to 0.6 = 60%)
+	thresholdStr := c.DefaultQuery("threshold", "0.6")
+	threshold, err := strconv.ParseFloat(thresholdStr, 64)
+	if err != nil {
+		BadRequestError(c, "invalid threshold parameter. Must be a decimal number")
+		return
+	}
+	// Enforce reasonable threshold bounds (30% minimum similarity for practical results)
+	if threshold < 0.3 || threshold > 1.0 {
+		BadRequestError(c, "threshold must be between 0.3 and 1.0")
+		return
+	}
+
+	// Parse limit parameter (default to 10, max 20 for fuzzy search to prevent expensive queries)
 	limitStr := c.DefaultQuery("limit", "10")
 	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit < 1 || limit > 50 {
-		BadRequestError(c, "invalid limit parameter. Must be between 1 and 50")
+	if err != nil {
+		BadRequestError(c, "invalid limit parameter. Must be an integer")
+		return
+	}
+	if limit < 1 || limit > 20 {
+		BadRequestError(c, "limit must be between 1 and 20")
 		return
 	}
 

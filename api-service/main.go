@@ -242,8 +242,6 @@ func main() {
 	{
 		public.GET("/recipes", recipeHandler.GetRecipes)
 		public.GET("/recipes/:id", recipeHandler.GetRecipe)
-		public.GET("/pantry/search", recipeHandler.SearchPantryItems)
-		public.GET("/pantry/fuzzy-search", recipeHandler.FuzzySearchPantryItems)
 	}
 
 	// Internal service endpoints (authentication required)
@@ -258,6 +256,10 @@ func main() {
 	protected := r.Group("/api/v1")
 	protected.Use(middleware.OptionalAuthMiddleware(authConfig)) // Optional for backwards compatibility
 	{
+		// Pantry search endpoints (require authentication)
+		protected.GET("/pantry/search", recipeHandler.SearchPantryItems)
+		protected.GET("/pantry/fuzzy-search", recipeHandler.FuzzySearchPantryItems)
+
 		// Upload endpoints with additional rate limiting
 		uploadGroup := protected.Group("/recipes")
 		uploadGroup.Use(middleware.CreateUploadRateLimit())
