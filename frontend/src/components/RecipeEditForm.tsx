@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Recipe, RecipeWithIngredients, RecipeIngredient } from '@/types/recipe';
 import { RecipeAPI } from '@/services/api';
 import IngredientList from './IngredientList';
+import { getErrorMessage, logError, retryWithBackoff } from '@/utils/error-handler';
+import { useToast, ToastContainer } from '@/components/Toast';
 
 interface RecipeEditFormProps {
   recipe: RecipeWithIngredients;
@@ -17,6 +19,7 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const { toasts, showSuccess, showError, showWarning, dismissToast } = useToast();
 
   // Auto-save timeout management using useRef to prevent memory leaks
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -138,12 +141,28 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
       setSaveStatus('saving');
       saveTimeoutRef.current = setTimeout(async () => {
         try {
-          await saveRecipe({ [field]: value });
+          await retryWithBackoff(
+            async () => await saveRecipe({ [field]: value }),
+            2, // max 2 retries for auto-save
+            500 // start with 500ms delay
+          );
           setSaveStatus('saved');
+          showSuccess('Changes saved');
           setTimeout(() => setSaveStatus('idle'), 2000);
         } catch (err) {
-          console.error('Auto-save failed:', err);
+          const errorInfo = getErrorMessage(err);
+          logError(err, { action: 'auto-save', field, recipeId: recipe.id });
+
           setSaveStatus('error');
+          showError(
+            'Auto-save failed',
+            errorInfo.userAction || 'Your changes were not saved. Please try again.',
+            errorInfo.retryable ? {
+              label: 'Retry',
+              onClick: () => handleFieldChange(field, value)
+            } : undefined
+          );
+
           setTimeout(() => setSaveStatus('idle'), 3000);
         }
       }, 1000); // 1 second debounce
@@ -257,18 +276,34 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
             });
           }
 
-          // Log any errors for debugging
+          // Show warning if some ingredients failed
           if (batchResult.errors && batchResult.errors.length > 0) {
-            console.error('Some ingredients failed to resolve:', batchResult.errors);
+            const failedCount = batchResult.errors.length;
+            showWarning(
+              `${failedCount} ingredient${failedCount > 1 ? 's' : ''} could not be linked`,
+              'You can manually link them later from the ingredients list.'
+            );
+            logError(batchResult.errors, { action: 'batch-resolve-partial', recipeId: recipe.id });
           }
         } catch (err) {
-          console.error('Failed to batch resolve pantry items:', err);
-          // Could show user-friendly error here
+          const errorInfo = getErrorMessage(err);
+          logError(err, { action: 'batch-resolve', recipeId: recipe.id });
+
+          showWarning(
+            'Could not auto-link ingredients',
+            'The recipe will be published, but ingredients remain unlinked. You can link them manually.',
+          );
+          // Continue with publish even if batch resolve fails
         }
       }
 
-      // Now publish the recipe
-      await RecipeAPI.updateRecipeStatus(recipe.id, 'published');
+      // Now publish the recipe with retry
+      await retryWithBackoff(
+        async () => await RecipeAPI.updateRecipeStatus(recipe.id, 'published'),
+        3, // max 3 retries for publish
+        1000 // start with 1 second delay
+      );
+
       setRecipe(prev => ({ ...prev, status: 'published' }));
       setSaveStatus('saved');
 
@@ -278,13 +313,26 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
         return rest;
       });
 
+      showSuccess('Recipe published successfully!', 'Redirecting to recipe view...');
+
       // Redirect to recipe view page after successful publish
       setTimeout(() => {
         router.push(`/recipes/${recipe.id}`);
-      }, 500); // Small delay to show success state
+      }, 1500); // Small delay to show success state
     } catch (error) {
-      console.error('Failed to publish recipe:', error);
+      const errorInfo = getErrorMessage(error);
+      logError(error, { action: 'publish', recipeId: recipe.id });
+
       setSaveStatus('error');
+      showError(
+        'Failed to publish recipe',
+        errorInfo.message,
+        errorInfo.retryable ? {
+          label: 'Try Again',
+          onClick: handlePublish
+        } : undefined
+      );
+
       setTimeout(() => setSaveStatus('idle'), 3000);
     } finally {
       setSaving(false);
@@ -338,7 +386,9 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
   };
 
   return (
-    <form className="space-y-6">
+    <>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      <form className="space-y-6">
       {/* Save Status Indicator */}
       <div className="flex justify-between items-center">
         <div className="text-sm text-gray-600">
@@ -509,5 +559,6 @@ export default function RecipeEditForm({ recipe: initialRecipe }: RecipeEditForm
         </div>
       </div>
     </form>
+    </>
   );
 }

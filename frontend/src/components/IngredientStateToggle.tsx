@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { RecipeIngredient, PantryItem } from '@/types/recipe';
 import { RecipeAPI } from '@/services/api';
+import { getErrorMessage, logError, retryWithBackoff } from '@/utils/error-handler';
 
 interface IngredientStateToggleProps {
   recipeId: number;
@@ -33,14 +34,24 @@ export default function IngredientStateToggle({
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  const [error, setError] = useState<string | null>(null);
+
   const searchPantryItems = useCallback(async (query: string) => {
     setLoading(true);
+    setError(null);
     try {
       // If query is empty, load all pantry items; otherwise search
-      const results = await RecipeAPI.searchPantryItems(query || '', 1);
+      const results = await retryWithBackoff(
+        async () => await RecipeAPI.searchPantryItems(query || '', 1),
+        2, // max 2 retries
+        500 // 500ms initial delay
+      );
       setSearchResults(results);
     } catch (error) {
-      console.error('Failed to search pantry items:', error);
+      const errorInfo = getErrorMessage(error);
+      logError(error, { action: 'search-pantry-items', query });
+
+      setError(errorInfo.message);
       setSearchResults([]);
     } finally {
       setLoading(false);
@@ -83,7 +94,11 @@ export default function IngredientStateToggle({
             });
         })
         .catch((error) => {
-          console.error('Failed to get AI pantry suggestion or fuzzy match:', error);
+          logError(error, {
+            action: 'ai-pantry-suggestion',
+            ingredientId: ingredient.id,
+            originalText: ingredient.original_text
+          });
           // Fallback to regex extraction
           setNewPantryItemName(extractPantryItemName(ingredient.original_text));
         })
@@ -144,11 +159,22 @@ export default function IngredientStateToggle({
     if (!newPantryItemName.trim()) return;
 
     setLoading(true);
+    setError(null);
     try {
-      const created = await RecipeAPI.createPantryItem(newPantryItemName.trim(), 1);
+      const created = await retryWithBackoff(
+        async () => await RecipeAPI.createPantryItem(newPantryItemName.trim(), 1),
+        2,
+        500
+      );
       onLinkToPantryItem(ingredient.id, created);
     } catch (error) {
-      console.error('Failed to create pantry item:', error);
+      const errorInfo = getErrorMessage(error);
+      logError(error, {
+        action: 'create-pantry-item',
+        itemName: newPantryItemName,
+        ingredientId: ingredient.id
+      });
+      setError(errorInfo.message);
     } finally {
       setLoading(false);
     }
@@ -279,6 +305,16 @@ export default function IngredientStateToggle({
                   <div className="px-3 py-2 text-sm text-gray-500 flex items-center">
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-green-600 mr-2"></div>
                     Loading pantry items...
+                  </div>
+                )}
+
+                {/* Error State */}
+                {error && !loading && (
+                  <div className="px-3 py-2 text-sm text-red-600 flex items-center">
+                    <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {error}
                   </div>
                 )}
 

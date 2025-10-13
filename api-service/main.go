@@ -254,7 +254,7 @@ func main() {
 
 	// Protected API routes (authentication required)
 	protected := r.Group("/api/v1")
-	protected.Use(middleware.OptionalAuthMiddleware(authConfig)) // Optional for backwards compatibility
+	protected.Use(middleware.AuthMiddleware(authConfig)) // Changed to require authentication
 	{
 		// Pantry search endpoints (require authentication and rate limiting)
 		searchGroup := protected.Group("/pantry")
