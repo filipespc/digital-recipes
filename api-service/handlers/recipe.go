@@ -1270,31 +1270,14 @@ func (h *RecipeHandler) SearchPantryItems(c *gin.Context) {
 	// Parse query parameter - now optional, empty returns all items
 	query := c.Query("q")
 
-	// Parse user_id parameter - required for user-scoped search
-	userIDStr := c.Query("user_id")
-	if userIDStr == "" {
-		BadRequestError(c, "query parameter 'user_id' is required")
-		return
-	}
-	userID, err := strconv.Atoi(userIDStr)
-	if err != nil {
-		BadRequestError(c, "invalid user_id parameter")
+	// Parse and validate user_id parameter
+	userID, valid := parseUserIDFromQuery(c)
+	if !valid {
 		return
 	}
 
-	// Verify the authenticated user matches the requested user_id
-	authenticatedUserID := middleware.GetUserID(c)
-	if authenticatedUserID == 0 {
-		AuthenticationError(c, "authentication required")
-		return
-	}
-
-	if authenticatedUserID != userID {
-		logger.WithFields(logrus.Fields{
-			"authenticated_user": authenticatedUserID,
-			"requested_user":     userID,
-		}).Warn("Unauthorized access attempt: user trying to search another user's pantry")
-		AuthorizationError(c, "access denied: cannot search other users' pantry items")
+	// Verify user access authorization
+	if !verifyUserAccess(c, userID, logger) {
 		return
 	}
 
@@ -1396,60 +1379,20 @@ func (h *RecipeHandler) SearchPantryItems(c *gin.Context) {
 func (h *RecipeHandler) FuzzySearchPantryItems(c *gin.Context) {
 	logger := middleware.LogWithContext(c)
 
-	// Parse query parameter - required for fuzzy search
-	query := c.Query("q")
-	if query == "" {
-		BadRequestError(c, "query parameter 'q' is required")
+	// Validate and sanitize search query (required for fuzzy search)
+	query, valid := validateSearchQuery(c, true, 2, 100)
+	if !valid {
 		return
 	}
 
-	// Input validation to prevent SQL injection and ensure query safety
-	query = strings.TrimSpace(query)
-	if len(query) < 2 {
-		BadRequestError(c, "query must be at least 2 characters long")
-		return
-	}
-	if len(query) > 100 {
-		BadRequestError(c, "query must not exceed 100 characters")
+	// Parse and validate user_id parameter
+	userID, valid := parseUserIDFromQuery(c)
+	if !valid {
 		return
 	}
 
-	// Check for potentially dangerous SQL characters/patterns
-	// Note: These are validated even though we use parameterized queries as defense in depth
-	if strings.ContainsAny(query, ";'\"\\") ||
-		strings.Contains(strings.ToLower(query), "drop") ||
-		strings.Contains(strings.ToLower(query), "delete") ||
-		strings.Contains(strings.ToLower(query), "insert") ||
-		strings.Contains(strings.ToLower(query), "update") {
-		BadRequestError(c, "query contains invalid characters or SQL keywords")
-		return
-	}
-
-	// Parse user_id parameter - required for user-scoped search
-	userIDStr := c.Query("user_id")
-	if userIDStr == "" {
-		BadRequestError(c, "query parameter 'user_id' is required")
-		return
-	}
-	userID, err := strconv.Atoi(userIDStr)
-	if err != nil {
-		BadRequestError(c, "invalid user_id parameter")
-		return
-	}
-
-	// Verify the authenticated user matches the requested user_id
-	authenticatedUserID := middleware.GetUserID(c)
-	if authenticatedUserID == 0 {
-		AuthenticationError(c, "authentication required")
-		return
-	}
-
-	if authenticatedUserID != userID {
-		logger.WithFields(logrus.Fields{
-			"authenticated_user": authenticatedUserID,
-			"requested_user":     userID,
-		}).Warn("Unauthorized access attempt: user trying to search another user's pantry")
-		AuthorizationError(c, "access denied: cannot search other users' pantry items")
+	// Verify user access authorization
+	if !verifyUserAccess(c, userID, logger) {
 		return
 	}
 
