@@ -256,9 +256,13 @@ func main() {
 	protected := r.Group("/api/v1")
 	protected.Use(middleware.OptionalAuthMiddleware(authConfig)) // Optional for backwards compatibility
 	{
-		// Pantry search endpoints (require authentication)
-		protected.GET("/pantry/search", recipeHandler.SearchPantryItems)
-		protected.GET("/pantry/fuzzy-search", recipeHandler.FuzzySearchPantryItems)
+		// Pantry search endpoints (require authentication and rate limiting)
+		searchGroup := protected.Group("/pantry")
+		searchGroup.Use(middleware.CreateSearchRateLimit())
+		{
+			searchGroup.GET("/search", recipeHandler.SearchPantryItems)
+			searchGroup.GET("/fuzzy-search", recipeHandler.FuzzySearchPantryItems)
+		}
 
 		// Upload endpoints with additional rate limiting
 		uploadGroup := protected.Group("/recipes")

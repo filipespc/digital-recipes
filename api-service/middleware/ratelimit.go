@@ -152,3 +152,17 @@ func CreateAuthRateLimit() gin.HandlerFunc {
 
 	return RateLimitMiddleware(config)
 }
+
+// CreateSearchRateLimit creates a rate limiter for search endpoints
+// Search operations are computationally expensive (especially fuzzy search)
+// so we enforce stricter limits
+func CreateSearchRateLimit() gin.HandlerFunc {
+	// Search endpoints: 30 requests per minute per user (0.5 req/sec)
+	// This prevents abuse while allowing legitimate search usage
+	config, err := NewUserRateLimit("30-M") // 30 requests per minute
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to create search rate limiter")
+	}
+
+	return RateLimitMiddleware(config)
+}
